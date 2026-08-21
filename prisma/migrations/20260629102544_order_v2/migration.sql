@@ -1,0 +1,8 @@
+-- AlterTable
+ALTER TABLE "public"."MenuItem" ALTER COLUMN "sku" DROP NOT NULL;
+
+-- AlterTable
+ALTER TABLE "public"."Order" ADD COLUMN     "discount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+ADD COLUMN     "notes" TEXT,
+ADD COLUMN     "roundOff" DOUBLE PRECISION NOT NULL DEFAULT 0,
+ADD COLUMN     "serviceCharge" DOUBLE PRECISION NOT NULL DEFAULT 0;

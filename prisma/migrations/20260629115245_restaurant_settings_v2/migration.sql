@@ -1,0 +1,10 @@
+-- AlterTable
+ALTER TABLE "public"."RestaurantSetting" ADD COLUMN     "billNumberStart" INTEGER NOT NULL DEFAULT 1,
+ADD COLUMN     "billPrefix" TEXT NOT NULL DEFAULT 'BILL',
+ADD COLUMN     "invoicePrefix" TEXT NOT NULL DEFAULT 'INV',
+ADD COLUMN     "kotPrefix" TEXT NOT NULL DEFAULT 'KOT',
+ADD COLUMN     "printerWidth" INTEGER NOT NULL DEFAULT 80,
+ADD COLUMN     "receiptFooter" TEXT DEFAULT 'Thank You! Visit Again.',
+ADD COLUMN     "roundOffEnabled" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN     "serviceCharge" DOUBLE PRECISION NOT NULL DEFAULT 0,
+ADD COLUMN     "taxPercentage" DOUBLE PRECISION NOT NULL DEFAULT 5;

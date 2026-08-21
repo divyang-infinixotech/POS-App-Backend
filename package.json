@@ -1,0 +1,48 @@
+{
+  "name": "restaurant-pos-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "node src/__tests__/run.js",
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "test:menu-images": "node test-menu-image-upload.js"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "bcryptjs": "^3.0.3",
+    "cloudinary": "^2.10.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.2.0",
+    "joi": "^18.2.3",
+    "json2csv": "^5.0.7",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.2.0",
+    "node-cron": "^4.6.0",
+    "nodemailer": "^9.0.3",
+    "pdfkit": "^0.19.1",
+    "prisma": "^6.19.3",
+    "qrcode": "^1.5.4",
+    "razorpay": "^2.9.8",
+    "sharp": "^0.35.3",
+    "socket.io": "^4.8.3",
+    "winston": "^3.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "nodemon": "^3.1.14",
+    "typescript": "^7.0.2"
+  }
+}

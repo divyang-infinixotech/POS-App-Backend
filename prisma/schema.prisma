@@ -1,0 +1,983 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  CASHIER
+  WAITER
+  KITCHEN
+  SUPER_ADMIN
+}
+
+enum RestaurantStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+/// Billing cycle for a subscription plan
+enum BillingCycle {
+  MONTHLY
+  YEARLY
+  ONCE
+}
+
+/// Type of subscription change recorded in plan history (append-only)
+enum PlanChangeType {
+  CREATION
+  UPGRADE
+  DOWNGRADE
+  SWITCH
+  RENEWAL
+  SUSPENSION
+  REACTIVATION
+  CANCELLATION
+  EXPIRATION
+}
+
+enum TableStatus {
+  AVAILABLE
+  OCCUPIED
+  RESERVED
+  CLEANING
+}
+
+enum OrderType {
+  DINE_IN
+  TAKEAWAY
+  DELIVERY
+  COUNTER_SALE
+}
+
+enum OrderStatus {
+  PENDING
+  PREPARING
+  READY
+  SERVED
+  COMPLETED
+  CANCELLED
+  HOLD
+}
+
+enum DiscountType {
+  FLAT
+  PERCENTAGE
+}
+
+enum KOTStatus {
+  PENDING
+  PREPARING
+  READY
+  SERVED
+  ACCEPTED
+  CANCELLED
+}
+
+enum BillStatus {
+  UNPAID
+  PAID
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  UPI
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  PARTIAL
+  REFUNDED
+  FAILED
+}
+
+enum PaymentGateway {
+  RAZORPAY
+  CASHFREE
+  PHONEPE
+  PAYTM
+  STRIPE
+  NONE
+}
+
+enum AuditModule {
+  AUTH
+  USER
+  CATEGORY
+  MENU
+  TABLE
+  ORDER
+  KOT
+  BILL
+  PAYMENT
+  SETTINGS
+  PRINTER
+  DASHBOARD
+  SUBSCRIPTION
+  CUSTOMER
+  FLOOR
+  REPORT
+  NOTIFICATION
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  PRINT
+  REPRINT
+  CANCEL
+  PAYMENT
+  VIEW
+  REFUND
+  APPLY_DISCOUNT
+}
+
+enum CustomerType {
+  WALK_IN
+  REGULAR
+  VIP
+}
+
+enum ConnectionType {
+  USB
+  LAN
+  BLUETOOTH
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+  TRIAL
+  SUSPENDED
+}
+
+enum NotificationType {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
+  ORDER
+  KITCHEN
+  PAYMENT
+  SUBSCRIPTION
+  SYSTEM
+}
+
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum BusinessType {
+  RESTAURANT
+  CAFE
+  BAR
+  FOOD_TRUCK
+  CLOUD_KITCHEN
+  OTHER
+}
+
+// ─── Models ─────────────────────────────────────────────────────────────────────
+
+/// Multi-tenant SaaS: User belongs to a Restaurant. SUPER_ADMIN has no restaurantId.
+model User {
+  id                Int       @id @default(autoincrement())
+  name              String
+  email             String    @unique // Login identifier — globally unique
+  password          String
+  role              UserRole
+  isActive          Boolean   @default(true)
+  avatar            String?
+  phone             String? // Per-restaurant uniqueness via app logic (SUPER_ADMIN has no restaurantId)
+  lastLogin         DateTime?
+  passwordChangedAt DateTime?
+  deletedAt         DateTime?
+  restaurantId      Int?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  restaurant    Restaurant?    @relation(fields: [restaurantId], references: [id])
+  auditLogs     AuditLog[]
+  notifications Notification[]
+
+  // Tickets created by this user
+  supportTickets SupportTicket[]
+
+  // Tickets assigned to this user
+  assignedTickets SupportTicket[] @relation("AssignedTickets")
+
+  @@index([restaurantId])
+  @@index([isActive])
+  @@index([email])
+  @@index([role])
+}
+
+/// Top-level tenant. Every business table references this model.
+model Restaurant {
+  id               Int              @id @default(autoincrement())
+  name             String
+  ownerName        String
+  phone            String           @unique
+  email            String?          @unique
+  gstNumber        String?
+  fssaiNumber      String?
+  address          String?
+  city             String?
+  state            String?
+  country          String?
+  pincode          String?
+  logo             String?
+  website          String?
+  supportEmail     String?
+  supportPhone     String?
+  businessType     BusinessType     @default(RESTAURANT)
+  timezone         String           @default("Asia/Kolkata")
+  currency         String           @default("INR")
+  language         String           @default("en")
+  subscriptionPlan String         @default("TRIAL") // plan code (denormalized from Plan.code)
+  status           RestaurantStatus @default(ACTIVE)
+  deletedAt        DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  users             User[]
+  categories        Category[]
+  menuItems         MenuItem[]
+  customers         Customer[]
+  tables            RestaurantTable[]
+  floors            Floor[]
+  orders            Order[]
+  kots              KOT[]
+  bills             Bill[]
+  payments          Payment[]
+  notifications     Notification[]
+  auditLogs         AuditLog[]
+  printerSetting    PrinterSetting?
+  restaurantSetting RestaurantSetting?
+  subscription      Subscription?
+  subscriptionHistory SubscriptionHistory[]
+  subscriptionPayments SubscriptionPayment[]
+  supportTickets    SupportTicket[]
+  stockMovements    StockMovement[]
+}
+
+/// Per-restaurant settings (1:1 with Restaurant)
+model RestaurantSetting {
+  id                      Int      @id @default(autoincrement())
+  restaurantName          String
+  gstNumber               String?
+  phone                   String?
+  email                   String?
+  address                 String?
+  logo                    String?
+  fssaiNumber             String?
+  website                 String?
+  currency                String   @default("INR")
+  timezone                String   @default("Asia/Kolkata")
+  language                String   @default("en")
+  billNumberStart         Int      @default(1)
+  billPrefix              String   @default("BILL")
+  invoicePrefix           String   @default("INV")
+  kotPrefix               String   @default("KOT")
+  receiptFooter           String?  @default("Thank You! Visit Again.")
+  roundOffEnabled         Boolean  @default(true)
+  serviceCharge           Float    @default(0)
+  taxPercentage           Float    @default(0)
+  enableKitchenDisplay    Boolean  @default(false)
+  enableKotStatusTracking Boolean  @default(false)
+  upiId                   String?  @default("")
+  // ── Module Visibility Settings ──
+  enableKitchen           Boolean  @default(true)
+  enableBilling           Boolean  @default(true)
+  enableHoldOrders        Boolean  @default(true)
+  enableAddItem           Boolean  @default(true)
+  enableSplitBill         Boolean  @default(true)
+  enableTransferTable     Boolean  @default(true)
+  enableMergeTables       Boolean  @default(true)
+  enableFloorManagement   Boolean  @default(true)
+  enableReports           Boolean  @default(true)
+  enableMenu              Boolean  @default(true)
+  enableStock             Boolean  @default(true)
+  enableActiveOrders      Boolean  @default(true)
+  enableTableReservations Boolean  @default(false)
+  // ── Billing Behavior Settings ──
+  autoPrintBill           Boolean  @default(false)
+  autoPrintKOT            Boolean  @default(false)
+  autoGenerateKOT         Boolean  @default(false)
+  multiplePayments        Boolean  @default(false)
+  askCustomerBeforePrint  Boolean  @default(false)
+  autoReleaseTable        Boolean  @default(true)
+  // ── POS Ordering / Layout Settings (persisted per restaurant) ──
+  enablePosOrdering       Boolean  @default(true) // POS Ordering screen visibility (New Ticket hidden while ON)
+  posLayout               String   @default("basic") // 'basic' | 'standard' | 'quick' — Basic POS layout
+  businessMode            String   @default("restaurant") // 'restaurant' | 'counter' (Basic POS) | 'hybrid'
+  enableCounterSale       Boolean  @default(false) // Basic POS quick-billing flow
+  taxType                 String   @default("Inclusive") // Inclusive | Exclusive
+  taxesAndCharges         Json? // Array of manually-created tax rules; no defaults are seeded
+  uiSettings              Json? // Full frontend settings snapshot for fields without explicit columns
+  restaurantId            Int      @unique
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+
+  @@index([restaurantId])
+}
+
+/// Physical/virtual floor within a restaurant
+model Floor {
+  id           Int      @id @default(autoincrement())
+  name         String
+  floorCode    String?
+  description  String?
+  isActive     Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  restaurantId Int
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  restaurant Restaurant        @relation(fields: [restaurantId], references: [id])
+  tables     RestaurantTable[]
+
+  @@unique([restaurantId, name])
+  @@index([restaurantId])
+}
+
+/// Dining table within a floor
+model RestaurantTable {
+  id           Int         @id @default(autoincrement())
+  tableNo      String
+  name         String?
+  capacity     Int
+  status       TableStatus @default(AVAILABLE)
+  shape        String      @default("round")
+  floorId      Int?
+  restaurantId Int
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  floor      Floor?     @relation(fields: [floorId], references: [id])
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+  orders     Order[]
+
+  @@unique([restaurantId, tableNo])
+  @@index([restaurantId])
+  @@index([floorId])
+  @@index([status])
+}
+
+/// Menu category per restaurant
+model Category {
+  id           Int      @id @default(autoincrement())
+  name         String
+  image        String?
+  color        String   @default("#16A34A")
+  icon         String   @default("utensils")
+  sortOrder    Int      @default(0)
+  isActive     Boolean  @default(true)
+  restaurantId Int
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+  menuItems  MenuItem[]
+
+  @@unique([restaurantId, name])
+  @@index([restaurantId])
+  @@index([isActive])
+}
+
+/// Menu item / dish. SKU is unique per restaurant.
+model MenuItem {
+  id               Int      @id @default(autoincrement())
+  name             String
+  shortName        String?
+  sku              String?
+  barcode          String?
+  description      String?
+  shortDescription String?
+  image            String? // imageUrl — only self-hosted / app-storage URLs (never arbitrary external URLs)
+  imagePublicId    String? // storage reference (e.g. "menu/{restaurantId}/{uuid}.jpg" or Cloudinary public_id)
+  imageIsExternal  Boolean  @default(false) // legacy marker: image points at a third-party URL awaiting user replacement
+  images           Json     @default("[]")
+  price            Float
+  costPrice        Float?
+  gstPercentage    Float    @default(0)
+  taxInclusive     Boolean  @default(true)
+  tax              Float    @default(0)
+  preparationTime  Int      @default(15) // minutes
+  kitchenCategory  String?  @default("")
+  displayOrder     Int      @default(0)
+  spicyLevel       Int      @default(0) // 0-5 scale
+  isVeg            Boolean  @default(true)
+  isAvailable      Boolean  @default(true)
+  isFeatured       Boolean  @default(false)
+  isRecommended    Boolean  @default(false)
+  currentStock     Int?
+  minStock         Int      @default(10)
+  maxStock         Int?
+  modifierOptions  String? // JSON string storing modifier groups (e.g., "Extra Cheese: Mozzarella +30, Cheddar +40")
+  unit             String   @default("piece")
+  categoryId       Int
+  restaurantId     Int
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  category   Category    @relation(fields: [categoryId], references: [id])
+  restaurant Restaurant  @relation(fields: [restaurantId], references: [id])
+  orderItems      OrderItem[]
+  stockMovements  StockMovement[]
+
+  @@unique([restaurantId, sku])
+  @@index([restaurantId])
+  @@index([categoryId])
+  @@index([isAvailable])
+  @@index([sku])
+  @@index([barcode])
+  @@index([isVeg])
+}
+
+/// Customer per restaurant. Phone is unique within each restaurant for loyalty.
+model Customer {
+  id           Int          @id @default(autoincrement())
+  name         String
+  phone        String?
+  email        String?
+  gstNumber    String?
+  address      String?
+  notes        String?
+  birthday     DateTime?
+  anniversary  DateTime?
+  type         CustomerType @default(WALK_IN)
+  totalOrders  Int          @default(0)
+  totalSpent   Float        @default(0)
+  restaurantId Int
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+  orders     Order[]
+
+  @@unique([restaurantId, phone])
+  @@index([restaurantId])
+  @@index([phone])
+  @@index([email])
+  @@index([type])
+}
+
+/// Order placed at a restaurant
+model Order {
+  id               Int           @id @default(autoincrement())
+  orderNo          String
+  orderType        OrderType
+  status           OrderStatus   @default(PENDING)
+  subtotal         Float         @default(0)
+  taxAmount        Float         @default(0)
+  totalAmount      Float         @default(0)
+  discount         Float         @default(0)
+  discountType     DiscountType?
+  discountValue    Float         @default(0)
+  serviceCharge    Float         @default(0)
+  roundOff         Float         @default(0)
+  notes            String?
+  cancelReason     String?
+  tableId          Int?
+  customerId       Int?
+  isDeleted        Boolean       @default(false)
+  deletedAt        DateTime?
+  holdAt           DateTime?
+  cancelledAt      DateTime?
+  acceptedAt       DateTime?
+  cookingStartedAt DateTime?
+  readyAt          DateTime?
+  servedAt         DateTime?
+  completedAt      DateTime?
+  /// When stock was deducted at order placement (idempotency guard — set exactly once when the order is created)
+  stockDeductedAt  DateTime?
+  /// When reserved stock was restored back to inventory (idempotency guard — set exactly once on cancel/delete)
+  stockRestoredAt  DateTime?
+  restaurantId     Int
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  bill            Bill?
+  kot             KOT[]
+  customer        Customer?        @relation(fields: [customerId], references: [id])
+  restaurant      Restaurant       @relation(fields: [restaurantId], references: [id])
+  table           RestaurantTable? @relation(fields: [tableId], references: [id])
+  orderItems      OrderItem[]
+  stockMovements  StockMovement[]
+
+  @@unique([restaurantId, orderNo])
+  @@index([restaurantId])
+  @@index([status])
+  @@index([tableId])
+  @@index([customerId])
+  @@index([createdAt])
+  @@index([orderType])
+}
+
+/// Line items within an order
+model OrderItem {
+  id         Int      @id @default(autoincrement())
+  quantity   Int
+  price      Float
+  tax        Float
+  total      Float
+  notes      String?
+  orderId    Int
+  menuItemId Int
+  createdAt  DateTime @default(now())
+
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id])
+  order    Order    @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@index([menuItemId])
+  @@index([orderId, menuItemId])
+}
+
+/// Append-only stock movement history (order deductions, adjustments, restores)
+model StockMovement {
+  id           Int       @id @default(autoincrement())
+  restaurantId Int
+  menuItemId   Int
+  orderId      Int?
+  type         String    @default("ORDER_CREATED") // ORDER_CREATED | ORDER_UPDATED | ORDER_CANCELLED | STOCK_ADJUSTMENT
+  quantity     Int // signed: negative for deductions, positive for additions
+  stockBefore  Int?
+  stockAfter   Int?
+  reference    String?
+  createdBy    Int?
+  createdAt    DateTime  @default(now())
+
+  menuItem   MenuItem   @relation(fields: [menuItemId], references: [id])
+  order      Order?     @relation(fields: [orderId], references: [id])
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+
+  @@index([restaurantId])
+  @@index([menuItemId])
+  @@index([orderId])
+  @@index([createdAt])
+}
+
+/// Kitchen Order Ticket — printing is mandatory, display screen is optional config
+model KOT {
+  id            Int       @id @default(autoincrement())
+  kotNo         String
+  status        KOTStatus @default(PENDING)
+  notes         String?
+  printCount    Int       @default(1)
+  priority      Int       @default(0)
+  cancelReason  String?
+  lastPrintedAt DateTime?
+  acceptedAt    DateTime?
+  preparingAt   DateTime?
+  readyAt       DateTime?
+  servedAt      DateTime?
+  cancelledAt   DateTime?
+  orderId       Int
+  restaurantId  Int
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  order      Order      @relation(fields: [orderId], references: [id])
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+
+  @@unique([restaurantId, kotNo])
+  @@index([restaurantId])
+  @@index([status])
+  @@index([orderId])
+  @@index([createdAt])
+}
+
+/// Bill / Invoice for an order
+model Bill {
+  id            Int            @id @default(autoincrement())
+  billNo        String
+  subtotal      Float
+  taxAmount     Float
+  discount      Float          @default(0)
+  discountType  DiscountType?
+  discountValue Float          @default(0)
+  discountReason String?
+  discountedBy  Int?
+  discountedAt  DateTime?
+  serviceCharge Float          @default(0)
+  roundOff      Float          @default(0)
+  grandTotal    Float
+  paidAmount    Float          @default(0)
+  balanceAmount Float          @default(0)
+  paymentMethod PaymentMethod?
+  status        BillStatus     @default(UNPAID)
+  paymentStatus PaymentStatus  @default(PENDING)
+  printedAt     DateTime?
+  reprintCount  Int            @default(0)
+  cancelReason  String?
+  cancelledAt   DateTime?
+  cancelledBy   Int?
+  isCancelled   Boolean        @default(false)
+  refundedAt    DateTime?
+  refundReason  String?
+  orderId       Int            @unique
+  restaurantId  Int
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  order      Order      @relation(fields: [orderId], references: [id])
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+  payments   Payment[]
+
+  @@unique([restaurantId, billNo])
+  @@index([restaurantId])
+  @@index([status])
+  @@index([paymentStatus])
+  @@index([orderId])
+  @@index([createdAt])
+}
+
+/// Individual payment transaction against a bill
+model Payment {
+  id               Int            @id @default(autoincrement())
+  paymentNo        String
+  amount           Float
+  paymentMethod    PaymentMethod
+  status           PaymentStatus  @default(PAID)
+  gateway          PaymentGateway @default(NONE)
+  transactionId    String?
+  gatewayRef       String?
+  failureReason    String?
+  notes            String?
+  createdBy        Int?
+  refundedAt       DateTime?
+  /// Card payment fields
+  cardNumber       String?
+  cardType         String?
+  last4Digits      String?
+  approvalCode     String?
+  /// UPI payment fields
+  upiTransactionId String?
+  upiVerifiedAt    DateTime?
+  billId           Int
+  restaurantId     Int
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  bill       Bill       @relation(fields: [billId], references: [id])
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+
+  @@unique([restaurantId, paymentNo])
+  @@index([restaurantId])
+  @@index([billId])
+  @@index([paymentMethod])
+  @@index([status])
+  @@index([gateway])
+  @@index([createdAt])
+}
+
+/// Printer configuration per restaurant (1:1)
+model PrinterSetting {
+  id             Int            @id @default(autoincrement())
+  printerName    String
+  printerWidth   Int            @default(80)
+  autoPrintBill  Boolean        @default(false)
+  autoPrintKOT   Boolean        @default(false)
+  showLogo       Boolean        @default(true)
+  showGST        Boolean        @default(true)
+  showQRCode     Boolean        @default(false)
+  billHeader     String?
+  billFooter     String?
+  connectionType ConnectionType @default(USB)
+  ipAddress      String?
+  macAddress     String?
+  port           Int?
+  printersJson   String?        @default("[]") // JSON array of multiple printers
+  restaurantId   Int            @unique
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+
+  @@index([restaurantId])
+}
+
+/// Audit trail for compliance and security. Supports multi-tenant filtering by restaurantId.
+model AuditLog {
+  id           Int         @id @default(autoincrement())
+  userId       Int?
+  restaurantId Int?
+  module       AuditModule
+  action       AuditAction
+  description  String
+  referenceId  Int?
+  referenceNo  String?
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime    @default(now())
+
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id])
+  user       User?       @relation(fields: [userId], references: [id])
+
+  @@index([restaurantId])
+  @@index([userId])
+  @@index([module])
+  @@index([action])
+  @@index([createdAt])
+  @@index([referenceId])
+}
+
+/// Subscription plan for each restaurant (1:1). Limits/features are snapshotted from the Plan at assignment time.
+model Subscription {
+  id                Int                @id @default(autoincrement())
+  restaurantId      Int                @unique
+  planId            Int? // FK to Plan (database-driven plans; null for legacy rows)
+  /// Downgrade scheduled by the restaurant admin — takes effect at the next renewal/expiry.
+  scheduledPlanId   Int?
+  plan              String             @default("TRIAL") // plan code (denormalized for display/filtering)
+  status            SubscriptionStatus @default(TRIAL)
+  startDate         DateTime           @default(now())
+  expiryDate        DateTime
+  nextRenewalDate   DateTime?
+  billingCycle      String             @default("MONTHLY") // MONTHLY | YEARLY | ONCE | TRIAL
+  maxUsers          Int?
+  maxTables         Int?
+  maxFloors         Int?
+  maxMenuItems      Int?
+  maxPrinters       Int?
+  maxBranches       Int?
+  maxOrdersPerMonth Int?
+  storageLimitMB    Int?
+  features          Json? // JSON array of enabled feature keys (snapshot from Plan.features)
+  amount            Float              @default(0)
+  autoRenew         Boolean            @default(false)
+  updatedBy         Int? // Super Admin user id who last changed this subscription
+  cancelledAt       DateTime?
+  cancelledReason   String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+  planDef    Plan?      @relation(fields: [planId], references: [id])
+  scheduledPlan Plan?   @relation("ScheduledPlan", fields: [scheduledPlanId], references: [id])
+  subscriptionPayments SubscriptionPayment[]
+
+  @@index([restaurantId])
+  @@index([planId])
+  @@index([scheduledPlanId])
+  @@index([plan])
+  @@index([status])
+  @@index([expiryDate])
+}
+
+/// Notifications for users within a restaurant
+model Notification {
+  id           Int                  @id @default(autoincrement())
+  restaurantId Int
+  userId       Int?
+  title        String
+  message      String
+  type         NotificationType
+  priority     NotificationPriority @default(NORMAL)
+  deepLink     String?
+  isRead       Boolean              @default(false)
+  createdAt    DateTime             @default(now())
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+  user       User?      @relation(fields: [userId], references: [id])
+
+  @@index([restaurantId])
+  @@index([userId])
+  @@index([type])
+  @@index([isRead])
+  @@index([createdAt])
+  @@index([priority])
+}
+
+/// Global platform settings for Super Admin
+model SystemSetting {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  value     Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Support tickets raised by restaurants
+model SupportTicket {
+  id           Int      @id @default(autoincrement())
+  restaurantId Int
+  userId       Int?
+  subject      String
+  description  String
+  status       String   @default("OPEN") // OPEN, IN_PROGRESS, RESOLVED, CLOSED
+  priority     String   @default("NORMAL") // LOW, NORMAL, HIGH, URGENT
+  assignedTo   Int?
+  resolution   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+  user       User?      @relation(fields: [userId], references: [id])
+  assignee   User?      @relation("AssignedTickets", fields: [assignedTo], references: [id])
+
+  @@index([restaurantId])
+  @@index([status])
+  @@index([priority])
+  @@index([assignedTo])
+}
+
+/// Subscription plan definition — fully database-driven (no hardcoded config).
+/// Module access is stored relationally in PlanModulePermission.
+model Plan {
+  id                Int          @id @default(autoincrement())
+  code              String       @unique // stable identifier, e.g. BASIC, PREMIUM
+  name              String
+  description       String?
+  monthlyPrice      Float        @default(0)
+  yearlyPrice       Float        @default(0)
+  billingCycle      BillingCycle @default(MONTHLY)
+  trialDays         Int          @default(15)
+  maxUsers          Int?
+  maxTables         Int?
+  maxFloors         Int?
+  maxMenuItems      Int?
+  maxPrinters       Int?
+  maxBranches       Int?
+  maxOrdersPerMonth Int?
+  storageLimitMB    Int?
+  features          Json         @default("[]") // Denormalized array of ENABLED module keys (kept in sync with PlanModulePermission)
+  isActive          Boolean      @default(true)
+  isDefault         Boolean      @default(false)
+  sortOrder         Int          @default(0)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  subscriptions      Subscription[]
+  scheduledOn        Subscription[] @relation("ScheduledPlan")
+  subscriptionPayments SubscriptionPayment[]
+  modulePermissions  PlanModulePermission[]
+  previousHistory    SubscriptionHistory[] @relation("HistoryPreviousPlan")
+  newHistory         SubscriptionHistory[] @relation("HistoryNewPlan")
+
+  @@index([isActive])
+  @@index([code])
+}
+
+/// SaaS module catalog — every feature/module a plan can grant.
+/// Fully database-driven: adding a row here surfaces a new ON/OFF toggle
+/// in the plan editor without code changes.
+model PlanModule {
+  id          Int      @id @default(autoincrement())
+  key         String   @unique // stable identifier, e.g. pos, kitchen, reports
+  name        String
+  description String?
+  icon        String   @default("package") // icon hint consumed by the UI
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  permissions PlanModulePermission[]
+
+  @@index([isActive])
+  @@index([key])
+}
+
+/// Plan ↔ module permission (relational). A plan grants/denies each catalog module.
+/// This is the single source of truth for module access — no hardcoded plan config.
+model PlanModulePermission {
+  id        Int      @id @default(autoincrement())
+  planId    Int
+  moduleId  Int
+  isEnabled Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  plan   Plan       @relation(fields: [planId], references: [id], onDelete: Cascade)
+  module PlanModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, moduleId])
+  @@index([moduleId])
+  @@index([planId])
+}
+
+/// Online payment attempt for a subscription upgrade/renewal (Razorpay).
+/// Every attempt is recorded first (CREATED), then marked PAID only after the
+/// payment signature is verified server-side. Unique order/payment ids make
+/// replays and duplicate webhook callbacks idempotent.
+model SubscriptionPayment {
+  id                Int       @id @default(autoincrement())
+  restaurantId      Int
+  subscriptionId    Int
+  planId            Int?
+  planCode          String
+  planName          String?
+  billingCycle      String    @default("MONTHLY") // MONTHLY | YEARLY | ONCE
+  action            String    @default("UPGRADE") // UPGRADE | RENEWAL | SWITCH
+  amount            Float
+  status            String    @default("CREATED") // CREATED | PAID | FAILED | REFUNDED
+  razorpayOrderId   String?   @unique
+  razorpayPaymentId String?   @unique
+  razorpaySignature String?
+  paymentMethod     String?   // from the gateway response (e.g. upi, card, netbanking)
+  reference         String?   // gateway reference / notes
+  errorMessage      String?
+  createdBy         Int?
+  paidAt            DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  restaurant   Restaurant   @relation(fields: [restaurantId], references: [id])
+  subscription Subscription @relation(fields: [subscriptionId], references: [id])
+  plan         Plan?        @relation(fields: [planId], references: [id])
+
+  @@index([restaurantId])
+  @@index([subscriptionId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// Append-only subscription history for every restaurant. Never overwritten.
+model SubscriptionHistory {
+  id             Int            @id @default(autoincrement())
+  restaurantId   Int
+  changeType     PlanChangeType
+  previousPlanId Int?
+  newPlanId      Int?
+  previousPlan   String?
+  newPlan        String?
+  previousStatus String?
+  newStatus      String?
+  billingCycle   String?
+  amount         Float?
+  expiryDate     DateTime?
+  changedBy      Int? // Super Admin user id
+  notes          String?
+  ipAddress      String?
+  createdAt      DateTime       @default(now())
+
+  restaurant      Restaurant @relation(fields: [restaurantId], references: [id])
+  previousPlanDef Plan?      @relation("HistoryPreviousPlan", fields: [previousPlanId], references: [id])
+  newPlanDef      Plan?      @relation("HistoryNewPlan", fields: [newPlanId], references: [id])
+
+  @@index([restaurantId])
+  @@index([changeType])
+  @@index([createdAt])
+}
