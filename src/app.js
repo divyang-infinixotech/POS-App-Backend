@@ -43,6 +43,7 @@ const notificationRoutes = require("./routes/notification.routes");
 const superAdminRoutes = require("./routes/super-admin.routes");
 
 const app = express();
+app.set("trust proxy", 1);
 
 // ─── Allowed origins (shared with Socket.IO — see config/origins.js) ───
 const { isOriginAllowed } = require("./config/origins");
