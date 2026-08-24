@@ -7,6 +7,8 @@
     "test": "node src/__tests__/run.js",
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
+    "build": "prisma generate",
+    "postinstall": "prisma generate",
     "test:menu-images": "node test-menu-image-upload.js"
   },
   "prisma": {

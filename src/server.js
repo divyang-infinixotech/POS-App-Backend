@@ -51,7 +51,7 @@ try {
   process.exit(1);
 }
 
-const PORT = parseInt(process.env.BACKEND_PORT, 10) || 5001;
+const PORT = parseInt(process.env.PORT || process.env.BACKEND_PORT, 10) || 5001;
 
 // ─── Create HTTP server (required by Socket.IO) ───
 const server = http.createServer(app);
@@ -67,11 +67,11 @@ try {
 server.listen(PORT, () => {
   try {
     const logger = require("./logger/logger");
-    logger.info(`Server running on http://localhost:${PORT}`);
+    logger.info(`Server running on port ${PORT}`);
   } catch (err) {
-    console.log(`✓ Server running on http://localhost:${PORT}`);
+    console.log(`✓ Server running on ${PORT}`);
   }
-  console.log(`✓ Backend ready at http://localhost:${PORT}`);
+  console.log(`✓ Backend ready on port ${PORT}`);
   console.log(`✓ Environment: ${process.env.NODE_ENV || "development"}`);
 });
 
