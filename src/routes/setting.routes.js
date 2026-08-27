@@ -3,6 +3,7 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const prisma = require("../config/prisma");
+const { storage, buildPublicId } = require("../services/storage.service");
 
 const router = express.Router();
 const audit = require("../middleware/audit.middleware");
@@ -103,6 +104,35 @@ async function saveLogoFile(buffer, restaurantId, ext) {
 
 // ─── Routes ───
 
+// PUBLIC: Get restaurant branding for login screen (no auth required)
+// Uses the first active restaurant's settings. For single-tenant deployments
+// this returns the only restaurant; for multi-tenant, the frontend can be
+// customized to pass a restaurant identifier in the future.
+router.get("/public/branding", async (req, res) => {
+  try {
+    const setting = await prisma.restaurantSetting.findFirst({
+      select: {
+        restaurantName: true,
+        logo: true,
+      },
+      orderBy: { id: 'asc' },
+    });
+    if (!setting) {
+      return res.json({ success: true, data: null });
+    }
+    res.json({
+      success: true,
+      data: {
+        restaurantName: setting.restaurantName || null,
+        logo: setting.logo || null,
+      },
+    });
+  } catch (err) {
+    // Never fail the login page — return null on error
+    res.json({ success: true, data: null });
+  }
+});
+
 // POST: Create or update settings
 router.post(
   "/",
@@ -150,8 +180,23 @@ router.post(
       } catch (err) {
         return res.status(400).json({ success: false, message: err.message });
       }
-      const fileName = await saveLogoFile(req.file.buffer, req.user.restaurantId, ext);
-      const logoUrl = `/uploads/logos/${fileName}`;
+      let logoUrl;
+      const useCloudinary = process.env.STORAGE_DRIVER === "cloudinary" &&
+        process.env.CLOUDINARY_CLOUD_NAME &&
+        process.env.CLOUDINARY_API_KEY &&
+        process.env.CLOUDINARY_API_SECRET;
+
+      if (useCloudinary) {
+        // Upload to Cloudinary via the storage abstraction
+        const safeExt = ext === "svg" ? "svg" : ext;
+        const key = `menu/${req.user.restaurantId}/logo-${Date.now()}.${safeExt}`;
+        const result = await storage.upload(req.file.buffer, { key, mimetype: req.file.mimetype });
+        logoUrl = result.url;
+      } else {
+        // Local storage
+        const fileName = await saveLogoFile(req.file.buffer, req.user.restaurantId, ext);
+        logoUrl = `/uploads/logos/${fileName}`;
+      }
       const existing = await prisma.restaurantSetting.findUnique({
         where: { restaurantId: req.user.restaurantId }
       });
@@ -187,11 +232,33 @@ router.delete(
         where: { restaurantId: req.user.restaurantId }
       });
       if (existing && existing.logo) {
-        // Delete file from disk
-        const fileName = path.basename(existing.logo);
-        const filePath = path.join(uploadsDir, fileName);
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
+        // Delete file from storage (Cloudinary or local)
+        const logoUrl = existing.logo;
+        const isCloudinaryUrl = logoUrl.startsWith("https://res.cloudinary.com/");
+        const isLocalUrl = logoUrl.startsWith("/uploads/logos/");
+
+        if (isCloudinaryUrl && process.env.STORAGE_DRIVER === "cloudinary") {
+          // Extract public_id from Cloudinary URL for deletion
+          try {
+            const urlParts = logoUrl.split("/");
+            const uploadIdx = urlParts.indexOf("upload");
+            if (uploadIdx > -1 && uploadIdx + 1 < urlParts.length) {
+              // public_id is everything after /upload/v.../ minus extension
+              const pathAfterUpload = urlParts.slice(uploadIdx + 1).join("/");
+              // Remove version prefix (v1234567890/) if present
+              const withoutVersion = pathAfterUpload.replace(/^v\d+\//, "");
+              const publicId = withoutVersion.replace(/\.[^.]+$/, "");
+              await storage.remove(publicId);
+            }
+          } catch (cloudErr) {
+            console.warn("Failed to delete Cloudinary logo:", cloudErr.message);
+          }
+        } else if (isLocalUrl) {
+          const fileName = path.basename(logoUrl);
+          const filePath = path.join(uploadsDir, fileName);
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+          }
         }
         await prisma.restaurantSetting.update({
           where: { restaurantId: req.user.restaurantId },
