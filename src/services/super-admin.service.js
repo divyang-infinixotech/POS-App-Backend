@@ -72,8 +72,36 @@ function buildSubscriptionWhere(opts) {
 
 // ─── Subscription helpers (DB-driven) ───
 
+/**
+ * Business-mode presets — applied to RestaurantSetting when a plan is assigned.
+ * The plan's businessMode is the authoritative source; the restaurant admin
+ * cannot override it.
+ */
+const BUSINESS_MODE_PRESETS = {
+  RESTAURANT: {
+    enableCounterSale: false,
+    enableKitchen: true,
+    enableFloorManagement: true,
+    enableActiveOrders: true,
+    enableMenu: true,
+    enableReports: true,
+    enableBilling: true,
+    enablePosOrdering: false,
+  },
+  BASIC_POS: {
+    enableCounterSale: true,
+    enableKitchen: false,
+    enableFloorManagement: false,
+    enableActiveOrders: false,
+    enableMenu: true,
+    enableReports: true,
+    enableBilling: true,
+    enablePosOrdering: true,
+  },
+};
+
 /** Apply plan feature access to RestaurantSetting module flags immediately */
-async function applyPlanFeaturesToSettings(tx, restaurantId, features) {
+async function applyPlanFeaturesToSettings(tx, restaurantId, features, businessMode) {
   var set = new Set(features || []);
   var updateData = {};
   Object.keys(FEATURE_SETTINGS_MAP).forEach(function (feature) {
@@ -81,6 +109,17 @@ async function applyPlanFeaturesToSettings(tx, restaurantId, features) {
       updateData[key] = set.has(feature);
     });
   });
+  // Apply business mode presets — overrides module visibility to match the
+  // assigned mode (e.g. BASIC_POS disables kitchen/floors/active_orders).
+  var mode = businessMode || "RESTAURANT";
+  var preset = BUSINESS_MODE_PRESETS[mode];
+  if (preset) {
+    Object.keys(preset).forEach(function (key) {
+      updateData[key] = preset[key];
+    });
+  }
+  // Business mode is also stored on RestaurantSetting for backward compatibility
+  updateData.businessMode = mode === "BASIC_POS" ? "counter" : "restaurant";
   if (Object.keys(updateData).length > 0) {
     await tx.restaurantSetting.updateMany({ where: { restaurantId: Number(restaurantId) }, data: updateData });
   }
@@ -270,8 +309,8 @@ var createRestaurant = async function(data, userId, ipAddress, userAgent) {
   return prisma.$transaction(async function(tx) {
     var restaurant = await tx.restaurant.create({ data: { name: name, ownerName: ownerName, phone: mobile, email: email || null, gstNumber: gstNumber || null, fssaiNumber: fssaiNumber || null, address: address || null, country: country || "India", state: state || null, city: city || null, pincode: pincode || null, timezone: timezone, currency: currency, language: language, logo: logo || null, subscriptionPlan: plan.code, status: status, businessType: businessType, website: website || null } });
     await tx.restaurantSetting.create({ data: { restaurantId: restaurant.id, restaurantName: name, currency: currency, timezone: timezone, language: language, taxPercentage: 0, serviceCharge: 0, roundOffEnabled: true, billPrefix: "BILL", invoicePrefix: "INV", kotPrefix: "KOT", receiptFooter: "Thank You! Visit Again." } });
-    var sub = await tx.subscription.create({ data: { restaurantId: restaurant.id, planId: plan.id, plan: plan.code, status: plan.code === "TRIAL" ? "TRIAL" : "ACTIVE", startDate: dates.startDate, expiryDate: dates.expiryDate, nextRenewalDate: dates.expiryDate, billingCycle: billingCycle, autoRenew: snapshot.autoRenew, maxUsers: data.maxUsers != null ? Number(data.maxUsers) : snapshot.maxUsers, maxTables: data.maxTables != null ? Number(data.maxTables) : snapshot.maxTables, maxMenuItems: data.maxMenuItems != null ? Number(data.maxMenuItems) : snapshot.maxMenuItems, maxFloors: snapshot.maxFloors, maxPrinters: snapshot.maxPrinters, maxBranches: snapshot.maxBranches, maxOrdersPerMonth: snapshot.maxOrdersPerMonth, storageLimitMB: snapshot.storageLimitMB, features: snapshot.features, amount: snapshot.amount } });
-    await applyPlanFeaturesToSettings(tx, restaurant.id, snapshot.features);
+    var sub = await tx.subscription.create({ data: { restaurantId: restaurant.id, planId: plan.id, plan: plan.code, status: plan.code === "TRIAL" ? "TRIAL" : "ACTIVE", businessMode: snapshot.businessMode, startDate: dates.startDate, expiryDate: dates.expiryDate, nextRenewalDate: dates.expiryDate, billingCycle: billingCycle, autoRenew: snapshot.autoRenew, maxUsers: data.maxUsers != null ? Number(data.maxUsers) : snapshot.maxUsers, maxTables: data.maxTables != null ? Number(data.maxTables) : snapshot.maxTables, maxMenuItems: data.maxMenuItems != null ? Number(data.maxMenuItems) : snapshot.maxMenuItems, maxFloors: snapshot.maxFloors, maxPrinters: snapshot.maxPrinters, maxBranches: snapshot.maxBranches, maxOrdersPerMonth: snapshot.maxOrdersPerMonth, storageLimitMB: snapshot.storageLimitMB, features: snapshot.features, amount: snapshot.amount } });
+    await applyPlanFeaturesToSettings(tx, restaurant.id, snapshot.features, snapshot.businessMode);
     var admin = await tx.user.create({ data: { restaurantId: restaurant.id, name: adminName, email: adminEmail, password: hashedPassword, role: "ADMIN", isActive: true } });
     await recordSubscriptionHistory(tx, { restaurantId: restaurant.id, changeType: "CREATION", previousPlanId: null, newPlanId: plan.id, previousPlan: null, newPlan: plan.code, previousStatus: null, newStatus: plan.code === "TRIAL" ? "TRIAL" : "ACTIVE", billingCycle: billingCycle, amount: snapshot.amount, expiryDate: dates.expiryDate, changedBy: userId, notes: "Restaurant created with the " + plan.name + " plan", ipAddress: ipAddress });
     await tx.notification.create({ data: { restaurantId: restaurant.id, userId: userId, title: "New Restaurant Created", message: "Restaurant " + name + " created on " + plan.name + " plan. Admin: " + adminName + " (" + adminEmail + ")", type: "SUCCESS" } });
@@ -480,7 +519,7 @@ var changeSubscriptionPlan = async function(restaurantId, data, userId, ipAddres
     var updated = await tx.subscription.update({
       where: { restaurantId: Number(restaurantId) },
       data: {
-        planId: plan.id, plan: plan.code, status: "ACTIVE", startDate: dates.startDate, expiryDate: dates.expiryDate,
+        planId: plan.id, plan: plan.code, status: "ACTIVE", businessMode: snapshot.businessMode, startDate: dates.startDate, expiryDate: dates.expiryDate,
         nextRenewalDate: dates.expiryDate, billingCycle: billingCycle, autoRenew: snapshot.autoRenew,
         maxUsers: snapshot.maxUsers, maxTables: snapshot.maxTables, maxFloors: snapshot.maxFloors,
         maxMenuItems: snapshot.maxMenuItems, maxPrinters: snapshot.maxPrinters, maxBranches: snapshot.maxBranches,
@@ -490,7 +529,7 @@ var changeSubscriptionPlan = async function(restaurantId, data, userId, ipAddres
     });
     await tx.restaurant.update({ where: { id: Number(restaurantId) }, data: { subscriptionPlan: plan.code, status: "ACTIVE" } });
     await tx.user.updateMany({ where: { restaurantId: Number(restaurantId) }, data: { isActive: true } });
-    await applyPlanFeaturesToSettings(tx, Number(restaurantId), snapshot.features);
+    await applyPlanFeaturesToSettings(tx, Number(restaurantId), snapshot.features, snapshot.businessMode);
     await recordSubscriptionHistory(tx, {
       restaurantId: Number(restaurantId), changeType: changeType,
       previousPlanId: subscription.planId, newPlanId: plan.id,
@@ -690,7 +729,7 @@ var listPlans = async function(opts) {
   });
   return plans.map(function (p) {
     return {
-      id: p.id, code: p.code, name: p.name, description: p.description,
+      id: p.id, code: p.code, name: p.name, description: p.description, businessMode: p.businessMode || "RESTAURANT",
       monthlyPrice: p.monthlyPrice, yearlyPrice: p.yearlyPrice, billingCycle: p.billingCycle,
       trialDays: p.trialDays, maxUsers: p.maxUsers, maxTables: p.maxTables, maxFloors: p.maxFloors,
       maxMenuItems: p.maxMenuItems, maxPrinters: p.maxPrinters, maxBranches: p.maxBranches,
@@ -715,6 +754,7 @@ var createPlan = async function(data) {
     var plan = await tx.plan.create({
       data: {
         code: code, name: data.name, description: data.description || null,
+        businessMode: data.businessMode || "RESTAURANT",
         monthlyPrice: Number(data.monthlyPrice || 0), yearlyPrice: Number(data.yearlyPrice || 0),
         billingCycle: data.billingCycle || "MONTHLY", trialDays: Number(data.trialDays || 0),
         maxUsers: data.maxUsers != null ? Number(data.maxUsers) : null,
@@ -755,6 +795,7 @@ var updatePlan = async function(id, data) {
   ["maxUsers", "maxTables", "maxFloors", "maxMenuItems", "maxPrinters", "maxBranches", "maxOrdersPerMonth", "storageLimitMB"].forEach(function (k) {
     if (data[k] !== undefined) updateData[k] = data[k] === null || data[k] === "" ? null : Number(data[k]);
   });
+  if (data.businessMode !== undefined) updateData.businessMode = data.businessMode;
   if (data.features !== undefined) updateData.features = Array.isArray(data.features) ? data.features : [];
   if (data.isActive !== undefined) updateData.isActive = !!data.isActive;
   if (data.isDefault !== undefined) updateData.isDefault = !!data.isDefault;
@@ -773,11 +814,16 @@ var updatePlan = async function(id, data) {
       await tx.subscription.updateMany({ where: { planId: Number(id) }, data: { plan: updateData.code } });
       await tx.restaurant.updateMany({ where: { subscriptionPlan: plan.code }, data: { subscriptionPlan: updateData.code } });
     }
+    // Cascade businessMode changes to all subscriptions using this plan
+    if (updateData.businessMode) {
+      await tx.subscription.updateMany({ where: { planId: Number(id) }, data: { businessMode: updateData.businessMode } });
+    }
     if (Array.isArray(updateData.features)) {
       var subs = await tx.subscription.findMany({ where: { planId: Number(id) }, select: { restaurantId: true } });
       await tx.subscription.updateMany({ where: { planId: Number(id) }, data: { features: updateData.features } });
+      var modeForCascade = updateData.businessMode || plan.businessMode || "RESTAURANT";
       for (var i = 0; i < subs.length; i++) {
-        await applyPlanFeaturesToSettings(tx, subs[i].restaurantId, updateData.features);
+        await applyPlanFeaturesToSettings(tx, subs[i].restaurantId, updateData.features, modeForCascade);
       }
     }
     return tx.plan.update({ where: { id: Number(id) }, data: updateData });

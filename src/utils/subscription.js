@@ -41,6 +41,7 @@ function planToSnapshot(plan, billingCycle) {
   return {
     planId: plan.id,
     plan: plan.code,
+    businessMode: plan.businessMode || "RESTAURANT",
     billingCycle: cycle,
     amount,
     autoRenew: plan.code !== "TRIAL" && cycle !== "ONCE",
@@ -95,6 +96,7 @@ async function getRestaurantSubscription(restaurantId) {
     plan: sub.plan,
     planId: sub.planId,
     planName: sub.planDef ? sub.planDef.name : sub.plan,
+    businessMode: sub.businessMode || "RESTAURANT",
     status,
     lifecycle: lc.lifecycle,
     expiryMessage: lc.expiryMessage,

@@ -46,7 +46,7 @@ const settingSchema = Joi.object({
     // POS Ordering / Layout Settings
     enablePosOrdering: Joi.boolean().default(true),
     posLayout: Joi.string().valid("basic", "standard", "quick").default("basic"),
-    businessMode: Joi.string().valid("restaurant", "counter", "hybrid").default("restaurant"),
+    // businessMode is derived from the subscription plan — removed from admin input
     enableCounterSale: Joi.boolean().default(false),
     taxType: Joi.string().valid("Inclusive", "Exclusive").default("Inclusive"),
     taxesAndCharges: Joi.array().items(Joi.object({

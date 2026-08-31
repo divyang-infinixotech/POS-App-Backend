@@ -112,7 +112,7 @@ const createOrUpdateSetting = async (req, res) => {
       // POS Ordering / Layout
       ["enablePosOrdering", "enablePosOrdering", toBool],
       ["posLayout", "posLayout", (v) => v || "basic"],
-      ["businessMode", "businessMode", (v) => v || "restaurant"],
+      // businessMode is derived from the subscription plan — admins cannot override it
       ["enableCounterSale", "enableCounterSale", toBool],
       ["taxType", "taxType", (v) => v || "Inclusive"],
       ["taxesAndCharges", "taxesAndCharges", (v) => (Array.isArray(v) ? v : undefined)],
@@ -229,6 +229,20 @@ const getSetting = async (req, res) => {
       // Silent fail - printers are optional
     }
 
+    // Derive the effective businessMode from the subscription plan (authoritative source)
+    let effectiveBusinessMode = (setting && setting.businessMode) || 'restaurant';
+    try {
+      const subscription = await prisma.subscription.findFirst({
+        where: { restaurantId: req.user.restaurantId },
+        select: { businessMode: true }
+      });
+      if (subscription && subscription.businessMode) {
+        effectiveBusinessMode = subscription.businessMode === 'BASIC_POS' ? 'counter' : 'restaurant';
+      }
+    } catch (subErr) {
+      // Silent fail - fall back to setting value
+    }
+
     if (!setting) {
       return res.json({
         success: true,
@@ -237,9 +251,12 @@ const getSetting = async (req, res) => {
       });
     }
 
+    // Override businessMode with the subscription-derived value
+    const settingWithMode = { ...setting, businessMode: effectiveBusinessMode };
+
     return res.json({
       success: true,
-      setting,
+      setting: settingWithMode,
       printers
     });
 

@@ -211,6 +211,14 @@ enum BusinessType {
   OTHER
 }
 
+/// High-level POS experience determined by the subscription plan.
+/// BASIC_POS: quick billing, no tables/KOT/kitchen workflow
+/// RESTAURANT: full dine-in with tables, KOT, kitchen, active orders
+enum BusinessMode {
+  BASIC_POS
+  RESTAURANT
+}
+
 // ─── Models ─────────────────────────────────────────────────────────────────────
 
 /// Multi-tenant SaaS: User belongs to a Restaurant. SUPER_ADMIN has no restaurantId.
@@ -781,6 +789,7 @@ model Subscription {
   scheduledPlanId   Int?
   plan              String             @default("TRIAL") // plan code (denormalized for display/filtering)
   status            SubscriptionStatus @default(TRIAL)
+  businessMode      BusinessMode       @default(RESTAURANT) // snapshotted from Plan.businessMode at assignment time
   startDate         DateTime           @default(now())
   expiryDate        DateTime
   nextRenewalDate   DateTime?
@@ -928,6 +937,7 @@ model Plan {
   code              String       @unique // stable identifier, e.g. BASIC, PREMIUM
   name              String
   description       String?
+  businessMode      BusinessMode @default(RESTAURANT) // POS experience: BASIC_POS or RESTAURANT
   monthlyPrice      Float        @default(0)
   yearlyPrice       Float        @default(0)
   billingCycle      BillingCycle @default(MONTHLY)
