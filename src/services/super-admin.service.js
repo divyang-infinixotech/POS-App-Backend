@@ -249,7 +249,7 @@ const restaurantDetails = async function(id) {
 };
 
 var createRestaurant = async function(data, userId, ipAddress, userAgent) {
-  var name = data.name, ownerName = data.ownerName, mobile = data.mobile, email = data.email, gstNumber = data.gstNumber, fssaiNumber = data.fssaiNumber, address = data.address, country = data.country || "India", state = data.state, city = data.city, pincode = data.pincode, timezone = data.timezone || "Asia/Kolkata", currency = data.currency || "INR", language = data.language || "en", logo = data.logo, status = data.status || "ACTIVE", adminName = data.adminName, adminEmail = data.adminEmail, adminPassword = data.adminPassword;
+  var name = data.name, ownerName = data.ownerName, mobile = data.mobile, email = data.email, gstNumber = data.gstNumber, fssaiNumber = data.fssaiNumber, address = data.address, country = data.country || "India", state = data.state, city = data.city, pincode = data.pincode, timezone = data.timezone || "Asia/Kolkata", currency = data.currency || "INR", language = data.language || "en", logo = data.logo, status = data.status || "ACTIVE", adminName = data.adminName, adminEmail = data.adminEmail, adminPassword = data.adminPassword, businessType = data.businessType || "RESTAURANT", website = data.website;
   // Resolve the subscription plan from the database (by planId or code) — never hardcoded
   var plan = null;
   if (data.planId) {
@@ -268,7 +268,7 @@ var createRestaurant = async function(data, userId, ipAddress, userAgent) {
   if (email) { var existingEmail = await prisma.restaurant.findUnique({ where: { email: email } }); if (existingEmail) throw new Error("A restaurant with this email already exists"); }
   var hashedPassword = await bcrypt.hash(adminPassword, 10);
   return prisma.$transaction(async function(tx) {
-    var restaurant = await tx.restaurant.create({ data: { name: name, ownerName: ownerName, phone: mobile, email: email || null, gstNumber: gstNumber || null, fssaiNumber: fssaiNumber || null, address: address || null, country: country || "India", state: state || null, city: city || null, pincode: pincode || null, timezone: timezone, currency: currency, language: language, logo: logo || null, subscriptionPlan: plan.code, status: status } });
+    var restaurant = await tx.restaurant.create({ data: { name: name, ownerName: ownerName, phone: mobile, email: email || null, gstNumber: gstNumber || null, fssaiNumber: fssaiNumber || null, address: address || null, country: country || "India", state: state || null, city: city || null, pincode: pincode || null, timezone: timezone, currency: currency, language: language, logo: logo || null, subscriptionPlan: plan.code, status: status, businessType: businessType, website: website || null } });
     await tx.restaurantSetting.create({ data: { restaurantId: restaurant.id, restaurantName: name, currency: currency, timezone: timezone, language: language, taxPercentage: 0, serviceCharge: 0, roundOffEnabled: true, billPrefix: "BILL", invoicePrefix: "INV", kotPrefix: "KOT", receiptFooter: "Thank You! Visit Again." } });
     var sub = await tx.subscription.create({ data: { restaurantId: restaurant.id, planId: plan.id, plan: plan.code, status: plan.code === "TRIAL" ? "TRIAL" : "ACTIVE", startDate: dates.startDate, expiryDate: dates.expiryDate, nextRenewalDate: dates.expiryDate, billingCycle: billingCycle, autoRenew: snapshot.autoRenew, maxUsers: data.maxUsers != null ? Number(data.maxUsers) : snapshot.maxUsers, maxTables: data.maxTables != null ? Number(data.maxTables) : snapshot.maxTables, maxMenuItems: data.maxMenuItems != null ? Number(data.maxMenuItems) : snapshot.maxMenuItems, maxFloors: snapshot.maxFloors, maxPrinters: snapshot.maxPrinters, maxBranches: snapshot.maxBranches, maxOrdersPerMonth: snapshot.maxOrdersPerMonth, storageLimitMB: snapshot.storageLimitMB, features: snapshot.features, amount: snapshot.amount } });
     await applyPlanFeaturesToSettings(tx, restaurant.id, snapshot.features);
@@ -1041,6 +1041,155 @@ var getNotifications = async function(opts) {
   return { notifications: notifications, pagination: { page: Number(opts.page || 1), limit: Number(opts.limit || 20), total: total, totalPages: Math.ceil(total / Number(opts.limit || 20)) } };
 };
 
+// ─── DOCUMENTS ───
+
+/** Allowed document types */
+var ALLOWED_DOC_TYPES = [
+  "GST_CERTIFICATE", "FSSAI_LICENSE", "BUSINESS_REGISTRATION",
+  "PAN", "OWNER_ID", "ADDRESS_PROOF", "OTHER"
+];
+
+/** Upload a document for a restaurant (called after multer processes the file) */
+var uploadDocument = async function(restaurantId, data, userId, ipAddress, userAgent) {
+  var restaurant = await prisma.restaurant.findUnique({ where: { id: Number(restaurantId) } });
+  if (!restaurant) throw new Error("Restaurant not found");
+  if (!data.documentType || ALLOWED_DOC_TYPES.indexOf(data.documentType) === -1) {
+    throw new Error("Invalid document type. Allowed: " + ALLOWED_DOC_TYPES.join(", "));
+  }
+  if (!data.fileReference) throw new Error("File reference is required");
+  var doc = await prisma.restaurantDocument.create({
+    data: {
+      restaurantId: Number(restaurantId),
+      documentType: data.documentType,
+      fileReference: data.fileReference,
+      originalFileName: data.originalFileName || null,
+      mimeType: data.mimeType || null,
+      fileSize: data.fileSize ? Number(data.fileSize) : null,
+      status: "PENDING",
+      uploadedBy: userId || null,
+    },
+  });
+  await createAuditLog({ restaurantId: Number(restaurantId), userId: userId, module: "USER", action: "CREATE", description: "Document uploaded: " + data.documentType, referenceId: doc.id, ipAddress: ipAddress, userAgent: userAgent });
+  return doc;
+};
+
+/** List all documents for a restaurant */
+var listDocuments = async function(restaurantId) {
+  var restaurant = await prisma.restaurant.findUnique({ where: { id: Number(restaurantId) } });
+  if (!restaurant) throw new Error("Restaurant not found");
+  return prisma.restaurantDocument.findMany({
+    where: { restaurantId: Number(restaurantId) },
+    orderBy: { createdAt: "desc" },
+    include: {
+      uploader: { select: { id: true, name: true, email: true } },
+      verifier: { select: { id: true, name: true, email: true } },
+    },
+  });
+};
+
+/** Verify a document */
+var verifyDocument = async function(restaurantId, documentId, userId, ipAddress, userAgent) {
+  var doc = await prisma.restaurantDocument.findUnique({ where: { id: Number(documentId) } });
+  if (!doc) throw new Error("Document not found");
+  if (doc.restaurantId !== Number(restaurantId)) throw new Error("Document does not belong to this restaurant");
+  var updated = await prisma.restaurantDocument.update({
+    where: { id: Number(documentId) },
+    data: { status: "VERIFIED", verifiedBy: userId, verifiedAt: new Date() },
+  });
+  await createAuditLog({ restaurantId: Number(restaurantId), userId: userId, module: "USER", action: "UPDATE", description: "Document verified: " + doc.documentType, referenceId: doc.id, ipAddress: ipAddress, userAgent: userAgent });
+  return updated;
+};
+
+/** Reject a document with a reason */
+var rejectDocument = async function(restaurantId, documentId, reason, userId, ipAddress, userAgent) {
+  var doc = await prisma.restaurantDocument.findUnique({ where: { id: Number(documentId) } });
+  if (!doc) throw new Error("Document not found");
+  if (doc.restaurantId !== Number(restaurantId)) throw new Error("Document does not belong to this restaurant");
+  if (!reason || !reason.trim()) throw new Error("Rejection reason is required");
+  var updated = await prisma.restaurantDocument.update({
+    where: { id: Number(documentId) },
+    data: { status: "REJECTED", rejectionReason: reason.trim(), verifiedBy: userId, verifiedAt: new Date() },
+  });
+  await createAuditLog({ restaurantId: Number(restaurantId), userId: userId, module: "USER", action: "UPDATE", description: "Document rejected: " + doc.documentType + " - " + reason.trim(), referenceId: doc.id, ipAddress: ipAddress, userAgent: userAgent });
+  return updated;
+};
+
+/** Delete a document */
+var deleteDocument = async function(restaurantId, documentId) {
+  var doc = await prisma.restaurantDocument.findUnique({ where: { id: Number(documentId) } });
+  if (!doc) throw new Error("Document not found");
+  if (doc.restaurantId !== Number(restaurantId)) throw new Error("Document does not belong to this restaurant");
+  await prisma.restaurantDocument.delete({ where: { id: Number(documentId) } });
+  return { message: "Document deleted successfully" };
+};
+
+// ─── POLICY AGREEMENTS ───
+
+/** Store a policy agreement record */
+var createPolicyAgreement = async function(restaurantId, data, userId, ipAddress, userAgent) {
+  var restaurant = await prisma.restaurant.findUnique({ where: { id: Number(restaurantId) } });
+  if (!restaurant) throw new Error("Restaurant not found");
+  if (!data.policyType || !data.policyVersion) throw new Error("policyType and policyVersion are required");
+  var agreement = await prisma.policyAgreement.create({
+    data: {
+      restaurantId: Number(restaurantId),
+      policyType: data.policyType,
+      policyVersion: data.policyVersion,
+      acceptedBy: userId,
+      ipAddress: ipAddress || null,
+      userAgent: userAgent || null,
+    },
+  });
+  await createAuditLog({ restaurantId: Number(restaurantId), userId: userId, module: "USER", action: "CREATE", description: "Policy accepted: " + data.policyType + " v" + data.policyVersion, referenceId: agreement.id, ipAddress: ipAddress, userAgent: userAgent });
+  return agreement;
+};
+
+/** List policy agreements for a restaurant */
+var listPolicyAgreements = async function(restaurantId) {
+  var restaurant = await prisma.restaurant.findUnique({ where: { id: Number(restaurantId) } });
+  if (!restaurant) throw new Error("Restaurant not found");
+  return prisma.policyAgreement.findMany({
+    where: { restaurantId: Number(restaurantId) },
+    orderBy: { createdAt: "desc" },
+    include: {
+      accepter: { select: { id: true, name: true, email: true } },
+    },
+  });
+};
+
+// ─── ENHANCED RESTAURANT CREATION (ONBOARDING) ───
+
+/**
+ * Create restaurant with onboarding data (documents, policies, owner info).
+ * Wraps the existing createRestaurant logic with additional document/policy storage.
+ */
+var createRestaurantOnboarding = async function(data, userId, ipAddress, userAgent) {
+  // Step 1: Create the restaurant using the existing flow
+  var result = await createRestaurant(data, userId, ipAddress, userAgent);
+  var restaurantId = result.id;
+
+  // Step 2: Store policy agreements if provided
+  if (Array.isArray(data.policyAgreements)) {
+    for (var i = 0; i < data.policyAgreements.length; i++) {
+      var pa = data.policyAgreements[i];
+      if (pa.policyType && pa.policyVersion) {
+        await createPolicyAgreement(restaurantId, pa, userId, ipAddress, userAgent);
+      }
+    }
+  }
+
+  // Step 3: Update onboarding status
+  await prisma.restaurant.update({
+    where: { id: restaurantId },
+    data: { onboardingStatus: "ACTIVE" },
+  });
+
+  // Step 4: Audit the onboarding completion
+  await createAuditLog({ restaurantId: restaurantId, userId: userId, module: "USER", action: "CREATE", description: "Restaurant onboarding completed: " + data.name, referenceId: restaurantId, referenceNo: data.name, ipAddress: ipAddress, userAgent: userAgent });
+
+  return result;
+};
+
 module.exports = {
   getDashboard: getDashboard,
   listRestaurants: listRestaurants,
@@ -1080,4 +1229,13 @@ module.exports = {
   listSupportTickets: listSupportTickets,
   updateSupportTicket: updateSupportTicket,
   getNotifications: getNotifications,
+  uploadDocument: uploadDocument,
+  listDocuments: listDocuments,
+  verifyDocument: verifyDocument,
+  rejectDocument: rejectDocument,
+  deleteDocument: deleteDocument,
+  createPolicyAgreement: createPolicyAgreement,
+  listPolicyAgreements: listPolicyAgreements,
+  createRestaurantOnboarding: createRestaurantOnboarding,
+  ALLOWED_DOC_TYPES: ALLOWED_DOC_TYPES,
 };

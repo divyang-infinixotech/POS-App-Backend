@@ -1,6 +1,8 @@
 const {
   getDashboard, listRestaurants, createRestaurant, restaurantDetails, updateRestaurant,
   changeRestaurantStatus, removeRestaurant, restoreRestaurant,
+  createRestaurantOnboarding, uploadDocument, listDocuments, verifyDocument, rejectDocument, deleteDocument,
+  createPolicyAgreement, listPolicyAgreements, ALLOWED_DOC_TYPES,
   listUsers, adminCreateUser, adminUpdateUser, adminResetPassword, adminToggleUserStatus, adminDeleteUser, adminChangeUserRole,
   listSubscriptions, changeSubscriptionPlan, renewSubscription, cancelSubscription, suspendSubscription, activateSubscription, getSubscriptionHistory, getSubscriptionPayments,
   listPlans, listPlanModules, createPlan, updatePlan, togglePlanActive, duplicatePlan, deletePlan,
@@ -598,12 +600,142 @@ const getPlatformNotifications = async (req, res) => {
   }
 };
 
+const multer = require("multer");
+const path = require("path");
+const crypto = require("crypto");
+
+// Multer config for document uploads (max 10MB)
+const DOC_UPLOADS_ROOT = path.join(__dirname, "..", "..", "uploads", "documents");
+const docStorage = multer.diskStorage({
+  destination: function (_req, _file, cb) {
+    const fs = require("fs");
+    fs.mkdirSync(DOC_UPLOADS_ROOT, { recursive: true });
+    cb(null, DOC_UPLOADS_ROOT);
+  },
+  filename: function (_req, file, cb) {
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, crypto.randomUUID() + ext);
+  },
+});
+const docUpload = multer({
+  storage: docStorage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: function (_req, file, cb) {
+    const allowed = [".pdf", ".jpg", ".jpeg", ".png"];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.indexOf(ext) === -1) {
+      return cb(new Error("Only PDF, JPG, JPEG, and PNG files are allowed"));
+    }
+    cb(null, true);
+  },
+});
+
+const onboardingCreateRestaurant = async (req, res) => {
+  try {
+    const data = await createRestaurantOnboarding(req.body, req.user.id, req.ip, req.headers["user-agent"]);
+    return successResponse(res, data, "Restaurant created via onboarding", 201);
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+const uploadDocumentHandler = async (req, res) => {
+  try {
+    if (!req.file) return errorResponse(res, "No file uploaded", 400);
+    var documentType = req.body.documentType || req.query.documentType;
+    if (!documentType) {
+      // Clean up uploaded file
+      const fs = require("fs");
+      if (req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return errorResponse(res, "documentType is required", 400);
+    }
+    var fileReference = "documents/" + req.file.filename;
+    var data = await uploadDocument(
+      req.params.id,
+      {
+        documentType: documentType,
+        fileReference: fileReference,
+        originalFileName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        fileSize: req.file.size,
+      },
+      req.user.id, req.ip, req.headers["user-agent"]
+    );
+    return successResponse(res, data, "Document uploaded successfully", 201);
+  } catch (error) {
+    // Clean up uploaded file on error
+    if (req.file) {
+      const fs = require("fs");
+      if (req.file.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    }
+    return errorResponse(res, error.message);
+  }
+};
+
+const getDocumentsHandler = async (req, res) => {
+  try {
+    var data = await listDocuments(req.params.id);
+    return successResponse(res, data, "Documents fetched successfully");
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+const verifyDocumentHandler = async (req, res) => {
+  try {
+    var data = await verifyDocument(req.params.id, req.params.documentId, req.user.id, req.ip, req.headers["user-agent"]);
+    return successResponse(res, data, "Document verified successfully");
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+const rejectDocumentHandler = async (req, res) => {
+  try {
+    var reason = req.body.reason || req.body.rejectionReason;
+    var data = await rejectDocument(req.params.id, req.params.documentId, reason, req.user.id, req.ip, req.headers["user-agent"]);
+    return successResponse(res, data, "Document rejected");
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+const deleteDocumentHandler = async (req, res) => {
+  try {
+    var data = await deleteDocument(req.params.id, req.params.documentId);
+    return successResponse(res, data, "Document deleted successfully");
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+const createPolicyAgreementHandler = async (req, res) => {
+  try {
+    var data = await createPolicyAgreement(req.params.id, req.body, req.user.id, req.ip, req.headers["user-agent"]);
+    return successResponse(res, data, "Policy agreement recorded", 201);
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+const getPolicyAgreementsHandler = async (req, res) => {
+  try {
+    var data = await listPolicyAgreements(req.params.id);
+    return successResponse(res, data, "Policy agreements fetched successfully");
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
 module.exports = {
-  dashboard, getOwnProfile, updateOwnProfile, getRestaurants, createRestaurant: createRestaurantHandler, getRestaurant, updateRestaurant: updateRestaurantHandler, updateRestaurantStatus, deleteRestaurant, getRestaurantLoginAs,
+  dashboard, getOwnProfile, updateOwnProfile, getRestaurants, createRestaurant: createRestaurantHandler, onboardingCreateRestaurant, getRestaurant, updateRestaurant: updateRestaurantHandler, updateRestaurantStatus, deleteRestaurant, getRestaurantLoginAs,
   getUsers, createUser: createUserHandler, updateUser: updateUserHandler, resetUserPassword, toggleUserStatus, deleteUser: deleteUserHandler, changeUserRole,
   getSubscriptions, changePlan, renewSubscription: renewSubscriptionHandler, cancelSubscription: cancelSubscriptionHandler, suspendSubscription: suspendSubscriptionHandler, activateSubscription: activateSubscriptionHandler, getSubscriptionHistory: getSubscriptionHistoryHandler, getSubscriptionPayments: getSubscriptionPaymentsHandler,
   getPlans, getPlanModules, createPlan: createPlanHandler, updatePlan: updatePlanHandler, togglePlanActive: togglePlanActiveHandler, duplicatePlan: duplicatePlanHandler, deletePlan: deletePlanHandler,
   getPlatformReports, getPlatformSettings, updatePlatformSetting, updatePlatformSettings, getAuditLogs: getAuditLogsHandler, getSupportTickets, updateSupportTicket: updateSupportTicketHandler, getPlatformNotifications,
   getGatewayStatus: getGatewayStatusHandler, saveGatewayConfig: saveGatewayConfigHandler, testGateway: testGatewayHandler, toggleGateway: toggleGatewayHandler,
   getPaymentMetrics: getPaymentMetricsHandler, listPayments: listPaymentsHandler,
+  docUpload, uploadDocument: uploadDocumentHandler, getDocuments: getDocumentsHandler,
+  verifyDocument: verifyDocumentHandler, rejectDocument: rejectDocumentHandler, deleteDocument: deleteDocumentHandler,
+  createPolicyAgreement: createPolicyAgreementHandler, getPolicyAgreements: getPolicyAgreementsHandler,
 };

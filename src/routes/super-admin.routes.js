@@ -5,7 +5,7 @@ const authorize = require("../middleware/role.middleware");
 const validate = require("../middleware/validate.middleware");
 
 const {
-  dashboard, getOwnProfile, updateOwnProfile, getRestaurants, createRestaurant, getRestaurant, updateRestaurant, updateRestaurantStatus, deleteRestaurant, getRestaurantLoginAs,
+  dashboard, getOwnProfile, updateOwnProfile, getRestaurants, createRestaurant, onboardingCreateRestaurant, getRestaurant, updateRestaurant, updateRestaurantStatus, deleteRestaurant, getRestaurantLoginAs,
   getUsers, createUser, updateUser, resetUserPassword, toggleUserStatus, deleteUser, changeUserRole,
   getSubscriptions, changePlan, renewSubscription, cancelSubscription, suspendSubscription, activateSubscription, getSubscriptionHistory, getSubscriptionPayments,
   getPlans, getPlanModules, createPlan, updatePlan, togglePlanActive, duplicatePlan, deletePlan,
@@ -14,6 +14,11 @@ const {
 } = require("../controllers/super-admin.controller");
 
 const { createRestaurantSchema, updateRestaurantSchema, createUserSchema, createPlanSchema, updatePlanSchema, changePlanSchema } = require("../validators/super-admin.validator");
+
+const {
+  docUpload, uploadDocument, getDocuments, verifyDocument, rejectDocument, deleteDocument,
+  createPolicyAgreement, getPolicyAgreements,
+} = require("../controllers/super-admin.controller");
 
 // All routes require authentication + SUPER_ADMIN role
 router.use(protect, authorize("SUPER_ADMIN"));
@@ -28,11 +33,23 @@ router.put("/profile", updateOwnProfile);
 // ─── Restaurants ───
 router.get("/restaurants", getRestaurants);
 router.post("/restaurants", validate(createRestaurantSchema), createRestaurant);
+router.post("/restaurants/onboarding", onboardingCreateRestaurant);
 router.get("/restaurants/:id", getRestaurant);
 router.put("/restaurants/:id", validate(updateRestaurantSchema), updateRestaurant);
 router.patch("/restaurants/:id/status", updateRestaurantStatus);
 router.get("/restaurants/:id/login-as", getRestaurantLoginAs);
 router.delete("/restaurants/:id", deleteRestaurant);
+
+// ─── Restaurant Documents ───
+router.post("/restaurants/:id/documents", docUpload.single("file"), uploadDocument);
+router.get("/restaurants/:id/documents", getDocuments);
+router.patch("/restaurants/:id/documents/:documentId/verify", verifyDocument);
+router.patch("/restaurants/:id/documents/:documentId/reject", rejectDocument);
+router.delete("/restaurants/:id/documents/:documentId", deleteDocument);
+
+// ─── Restaurant Policy Agreements ───
+router.post("/restaurants/:id/policy-agreements", createPolicyAgreement);
+router.get("/restaurants/:id/policy-agreements", getPolicyAgreements);
 
 // ─── Users ───
 router.get("/users", getUsers);

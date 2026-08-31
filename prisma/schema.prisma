@@ -167,6 +167,22 @@ enum SubscriptionStatus {
   SUSPENDED
 }
 
+/// Verification status for uploaded business documents
+enum DocumentStatus {
+  PENDING
+  UNDER_REVIEW
+  VERIFIED
+  REJECTED
+}
+
+/// Onboarding lifecycle status (separate from restaurant ACTIVE/INACTIVE)
+enum OnboardingStatus {
+  DRAFT
+  PENDING_DOCUMENT_REVIEW
+  ACTIVE
+  REJECTED
+}
+
 enum NotificationType {
   INFO
   SUCCESS
@@ -224,6 +240,15 @@ model User {
   // Tickets assigned to this user
   assignedTickets SupportTicket[] @relation("AssignedTickets")
 
+  // Documents uploaded by this user
+  uploadedDocuments RestaurantDocument[]
+
+  // Documents verified by this user
+  verifiedDocuments RestaurantDocument[] @relation("VerifiedDocuments")
+
+  // Policy agreements accepted by this user
+  policyAccepted PolicyAgreement[] @relation("PolicyAccepters")
+
   @@index([restaurantId])
   @@index([isActive])
   @@index([email])
@@ -277,6 +302,9 @@ model Restaurant {
   subscriptionPayments SubscriptionPayment[]
   supportTickets    SupportTicket[]
   stockMovements    StockMovement[]
+  documents         RestaurantDocument[]
+  policyAgreements  PolicyAgreement[]
+  onboardingStatus  OnboardingStatus?  @default(DRAFT)
 }
 
 /// Per-restaurant settings (1:1 with Restaurant)
@@ -842,6 +870,55 @@ model SupportTicket {
   @@index([status])
   @@index([priority])
   @@index([assignedTo])
+}
+
+/// Business documents uploaded during restaurant onboarding (GST, FSSAI, etc.)
+model RestaurantDocument {
+  id               Int            @id @default(autoincrement())
+  restaurantId     Int
+  documentType     String         // e.g. GST_CERTIFICATE, FSSAI_LICENSE, BUSINESS_REGISTRATION, PAN, OWNER_ID, ADDRESS_PROOF, OTHER
+  fileReference    String?        // storage key / Cloudinary public_id
+  originalFileName String?
+  mimeType         String?
+  fileSize         Int?           // bytes
+  status           DocumentStatus @default(PENDING)
+  rejectionReason  String?
+  uploadedBy       Int?           // Super Admin user id
+  uploadedAt       DateTime       @default(now())
+  verifiedBy       Int?           // Super Admin user id who verified/rejected
+  verifiedAt       DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+  uploader   User?      @relation(fields: [uploadedBy], references: [id])
+  verifier   User?      @relation("VerifiedDocuments", fields: [verifiedBy], references: [id])
+
+  @@index([restaurantId])
+  @@index([status])
+  @@index([documentType])
+  @@index([createdAt])
+}
+
+/// Policy agreements accepted during restaurant onboarding (versioned)
+model PolicyAgreement {
+  id            Int      @id @default(autoincrement())
+  restaurantId  Int
+  policyType    String   // e.g. TERMS_OF_SERVICE, PRIVACY_POLICY, SECURITY_POLICY, DATA_PROCESSING
+  policyVersion String   // e.g. "2026.01"
+  acceptedBy    Int      // Super Admin user id
+  acceptedAt    DateTime @default(now())
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime @default(now())
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+  accepter   User?      @relation("PolicyAccepters", fields: [acceptedBy], references: [id])
+
+  @@index([restaurantId])
+  @@index([policyType])
+  @@index([acceptedBy])
+  @@index([createdAt])
 }
 
 /// Subscription plan definition — fully database-driven (no hardcoded config).
