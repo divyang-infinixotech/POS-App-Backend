@@ -1,4 +1,4 @@
-const prisma = require("../config/prisma");
+// tenantDb is available as req.tenantDb (attached by auth middleware)
 const { randomUUID } = require("crypto");
 const { generateBillNumber } = require("../utils/numberGenerator");
 const { successResponse, errorResponse } = require("../utils/response");
@@ -9,10 +9,10 @@ const { calculateDiscountAmount } = require("../utils/discount");
 // payment. Payment must never touch stock — no deductOrderStock calls here.
 
 // ─── Audit helper ───
-const createAuditLogEntry = async (data) => {
+const createAuditLogEntry = async (data, dbOverride) => {
   try {
     const { createAuditLog } = require("../services/audit.service");
-    await createAuditLog(data);
+    await createAuditLog(data, dbOverride || null);
   } catch (err) {
     console.error("Audit log error:", err.message);
   }
@@ -20,6 +20,10 @@ const createAuditLogEntry = async (data) => {
 
 // ─── Collect Payment (Combined: Bill + Payment + Complete Order + Release Table) ───
 const collectPayment = async (req, res) => {
+  const prisma = req.tenantDb;
+  if (!prisma) {
+    return errorResponse(res, "Restaurant database not available. Please try again or contact support.", 503);
+  }
   try {
     const {
       orderId,
@@ -78,12 +82,23 @@ const collectPayment = async (req, res) => {
       );
     }
 
-    // Check for existing paid bill
+    // Check for existing paid bill — return 200 with alreadyPaid flag so
+    // the frontend can show the paid-bill screen instead of an error toast.
     const existingBill = await prisma.bill.findFirst({
       where: { orderId: order.id, isCancelled: false },
+      include: {
+        payments: { orderBy: { createdAt: "desc" } },
+        order: {
+          include: { table: true, customer: true, orderItems: { include: { menuItem: true } } },
+        },
+      },
     });
     if (existingBill && existingBill.paymentStatus === "PAID") {
-      return errorResponse(res, "This order has already been paid", 400);
+      return successResponse(res, {
+        bill: existingBill,
+        payments: existingBill.payments || [],
+        alreadyPaid: true,
+      }, "This order has already been paid");
     }
 
     // ── Execute everything in a transaction ──
@@ -120,7 +135,7 @@ const collectPayment = async (req, res) => {
         bill = await tx.bill.create({
           data: {
             restaurantId,
-            billNo: await generateBillNumber(),
+            billNo: await generateBillNumber(tx),
             orderId: order.id,
             subtotal, ...billDiscountData, serviceCharge, taxAmount, roundOff, grandTotal,
             paidAmount: totalPayments,
@@ -193,7 +208,31 @@ const collectPayment = async (req, res) => {
           });
         }
 
-        // 3b. Stock was already reserved when the order was placed — payment
+                // 3c. Release merged tables if this order is part of a merge group
+        try {
+          const mergeGroup = await tx.mergeGroup.findFirst({
+            where: { primaryOrderId: order.id, status: "ACTIVE" }
+          });
+          if (mergeGroup) {
+            const mgTables = await tx.mergeGroupTable.findMany({
+              where: { mergeGroupId: mergeGroup.id }
+            });
+            for (const mgt of mgTables) {
+              await tx.restaurantTable.update({
+                where: { id: mgt.tableId },
+                data: { status: "AVAILABLE" }
+              });
+            }
+            await tx.mergeGroup.update({
+              where: { id: mergeGroup.id },
+              data: { status: "COMPLETED" }
+            });
+          }
+        } catch (mergeErr) {
+          console.error("[Payment] Merge release failed (non-critical):", mergeErr.message);
+        }
+
+// 3b. Stock was already reserved when the order was placed — payment
         // does NOT deduct again (no duplicate deduction).
       }
 
@@ -211,18 +250,37 @@ const collectPayment = async (req, res) => {
       });
     } catch (err) {
       if (err && err.code === "P2002") {
-        return errorResponse(res, "This order has already been paid", 400);
+        // Unique constraint violation — another request already paid this order.
+        // Return the existing bill so the frontend can show paid status.
+        const paidBill = await prisma.bill.findFirst({
+          where: { orderId: order.id, isCancelled: false },
+          include: {
+            payments: { orderBy: { createdAt: "desc" } },
+            order: {
+              include: { table: true, customer: true, orderItems: { include: { menuItem: true } } },
+            },
+          },
+        });
+        return successResponse(res, {
+          bill: paidBill,
+          payments: paidBill?.payments || [],
+          alreadyPaid: true,
+        }, "This order has already been paid");
       }
       throw err;
     }
 
     // ── Post-transaction side effects ──
-    await createNotification({
-      restaurantId, userId: req.user.id,
-      title: "Payment Received",
-      message: `₹${totalPayments.toFixed(2)} received for Order ${order.orderNo}`,
-      type: "PAYMENT",
-    });
+    try {
+      await createNotification(prisma, {
+        restaurantId, userId: req.user.id,
+        title: "Payment Received",
+        message: `₹${totalPayments.toFixed(2)} received for Order ${order.orderNo}`,
+        type: "PAYMENT",
+      });
+    } catch (notifErr) {
+      console.error("[Payment] Notification creation failed (non-critical):", notifErr.message);
+    }
 
     try {
       emitOrderEvent(restaurantId, "payment", {
@@ -237,12 +295,16 @@ const collectPayment = async (req, res) => {
       }
     } catch (err) { console.error("Socket emit error:", err.message); }
 
-    await createAuditLogEntry({
-      userId: req.user.id, restaurantId,
-      module: "PAYMENT", action: "PAYMENT",
-      description: `Payment collected ₹${totalPayments} for Order ${order.orderNo} (Bill ${result.bill.billNo})`,
-      referenceId: result.bill.id, referenceNo: result.bill.billNo,
-    });
+    try {
+      await createAuditLogEntry({
+        userId: req.user.id, restaurantId,
+        module: "PAYMENT", action: "PAYMENT",
+        description: `Payment collected ₹${totalPayments} for Order ${order.orderNo} (Bill ${result.bill.billNo})`,
+        referenceId: result.bill.id, referenceNo: result.bill.billNo,
+      }, prisma);
+    } catch (auditErr) {
+      console.error("[Payment] Audit log failed (non-critical):", auditErr.message);
+    }
 
     // Fetch the complete result with relations
     const completeBill = await prisma.bill.findUnique({
@@ -267,6 +329,7 @@ const collectPayment = async (req, res) => {
 };
 
 const createPayment = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -334,20 +397,17 @@ const createPayment = async (req, res) => {
 
             }
 
-        });
-        await createNotification({
-
-            restaurantId: req.user.restaurantId,
-
-            userId: req.user.id,
-
-            title: "Payment Received",
-
-            message: `₹${payment.amount} received via ${payment.paymentMethod}.`,
-
-            type: "SUCCESS"
-
-        });
+        });        try {
+            await createNotification(prisma, {
+                restaurantId: req.user.restaurantId,
+                userId: req.user.id,
+                title: "Payment Received",
+                message: `₹${payment.amount} received via ${payment.paymentMethod}.`,
+                type: "SUCCESS"
+            });
+        } catch (notifErr) {
+            console.error("[Payment] Notification creation failed (non-critical):", notifErr.message);
+        }
         // const shift = await prisma.shift.findFirst({
 
         //     where: {
@@ -495,6 +555,7 @@ const partialPayment = async (req, res) => {
 
 };
 const splitPayment = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -739,6 +800,7 @@ const splitPayment = async (req, res) => {
 
 };
 const getPayments = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -794,6 +856,7 @@ const getPayments = async (req, res) => {
 
 // ─── Reprint Receipt (increment reprint count) ───
 const reprintReceipt = async (req, res) => {
+  const prisma = req.tenantDb;
   try {
     const billId = Number(req.params.id);
     const bill = await prisma.bill.findFirst({
@@ -814,6 +877,7 @@ const reprintReceipt = async (req, res) => {
 
 // ─── Mark Bill as Printed ───
 const markPrinted = async (req, res) => {
+  const prisma = req.tenantDb;
   try {
     const billId = Number(req.params.id);
     const bill = await prisma.bill.findFirst({
@@ -834,6 +898,7 @@ const markPrinted = async (req, res) => {
 
 // ─── Send Receipt via Email (placeholder for future implementation) ───
 const emailReceipt = async (req, res) => {
+  const prisma = req.tenantDb;
   try {
     const billId = Number(req.params.id);
     const bill = await prisma.bill.findFirst({
@@ -851,6 +916,7 @@ const emailReceipt = async (req, res) => {
 
 // ─── Generate UPI QR Code Data ───
 const generateUPIQrData = async (req, res) => {
+  const prisma = req.tenantDb;
   try {
     const { amount, orderNo } = req.body;
     const restaurantId = req.user.restaurantId;
@@ -886,6 +952,7 @@ const generateUPIQrData = async (req, res) => {
 
 // ─── Verify UPI Payment ───
 const verifyUPIPayment = async (req, res) => {
+  const prisma = req.tenantDb;
   try {
     const { paymentId, upiTransactionId } = req.body;
 

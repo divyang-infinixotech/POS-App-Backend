@@ -1,4 +1,4 @@
-const prisma = require("../config/prisma");
+const { platformPrisma } = require("../config/tenantPrisma");
 
 // ── Shared date-range helper (same logic as report.service.js) ──
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
@@ -31,7 +31,8 @@ function dateWhere(restaurantId, from, to, dateField = "createdAt") {
 // ══════════════════════════════════════════════════════════════
 // 1. HOURLY SALES REPORT
 // ══════════════════════════════════════════════════════════════
-const getHourlySalesReport = async (restaurantId, from, to) => {
+const getHourlySalesReport = async (restaurantId, from, to, db) => {
+    const prisma = db || platformPrisma;
   const billWhere = dateWhere(restaurantId, from, to, "createdAt");
   billWhere.isCancelled = false;
   billWhere.status = "PAID";
@@ -75,7 +76,8 @@ const getHourlySalesReport = async (restaurantId, from, to) => {
 // ══════════════════════════════════════════════════════════════
 // 2. SALES COMPARISON REPORT
 // ══════════════════════════════════════════════════════════════
-const getSalesComparisonReport = async (restaurantId, from, to, prevFrom, prevTo) => {
+const getSalesComparisonReport = async (restaurantId, from, to, prevFrom, prevTo, db) => {
+    const prisma = db || platformPrisma;
   const buildSummary = async (f, t) => {
     const billWhere = dateWhere(restaurantId, f, t, "createdAt");
     billWhere.isCancelled = false;
@@ -121,12 +123,15 @@ const getSalesComparisonReport = async (restaurantId, from, to, prevFrom, prevTo
     const totalTax = bills.reduce((s, b) => s + Number(b.taxAmount || 0), 0);
     const totalDiscount = bills.reduce((s, b) => s + Number(b.discount || 0), 0);
 
+    // AOV uses paid-bill count as denominator (same population as totalSales)
+    // to keep numerator and denominator consistent. This matches the Sales
+    // Report definition: totalSales / paidBills.length.
     return {
       totalSales,
       totalOrders,
       completedOrders,
       totalItemsSold,
-      averageOrderValue: completedOrders > 0 ? totalSales / completedOrders : 0,
+      averageOrderValue: bills.length > 0 ? totalSales / bills.length : 0,
       totalTax,
       totalDiscount,
       netRevenue: totalSales,
@@ -160,7 +165,8 @@ const getSalesComparisonReport = async (restaurantId, from, to, prevFrom, prevTo
 // ══════════════════════════════════════════════════════════════
 // 3. DISCOUNT REPORT
 // ══════════════════════════════════════════════════════════════
-const getDiscountReport = async (restaurantId, from, to) => {
+const getDiscountReport = async (restaurantId, from, to, db) => {
+    const prisma = db || platformPrisma;
   const billWhere = dateWhere(restaurantId, from, to, "createdAt");
   billWhere.isCancelled = false;
   billWhere.status = "PAID";
@@ -216,7 +222,8 @@ const getDiscountReport = async (restaurantId, from, to) => {
 // ══════════════════════════════════════════════════════════════
 // 4. CANCELLATION REPORT
 // ══════════════════════════════════════════════════════════════
-const getCancellationReport = async (restaurantId, from, to) => {
+const getCancellationReport = async (restaurantId, from, to, db) => {
+    const prisma = db || platformPrisma;
   const orderWhere = dateWhere(restaurantId, from, to, "createdAt");
   orderWhere.status = "CANCELLED";
   orderWhere.isDeleted = false;
@@ -263,7 +270,8 @@ const getCancellationReport = async (restaurantId, from, to) => {
 // ══════════════════════════════════════════════════════════════
 // 5. KOT REPORTS
 // ══════════════════════════════════════════════════════════════
-const getKotRegister = async (restaurantId, from, to) => {
+const getKotRegister = async (restaurantId, from, to, db) => {
+    const prisma = db || platformPrisma;
   const kotWhere = dateWhere(restaurantId, from, to, "createdAt");
 
   const kots = await prisma.kOT.findMany({
@@ -309,7 +317,8 @@ const getKotRegister = async (restaurantId, from, to) => {
   return { kots: kotsWithTimes };
 };
 
-const getKotSummary = async (restaurantId, from, to) => {
+const getKotSummary = async (restaurantId, from, to, db) => {
+    const prisma = db || platformPrisma;
   const kotWhere = dateWhere(restaurantId, from, to, "createdAt");
 
   const [totalKots, statusGroups] = await Promise.all([
@@ -355,7 +364,8 @@ const getKotSummary = async (restaurantId, from, to) => {
   };
 };
 
-const getKitchenPerformance = async (restaurantId, from, to) => {
+const getKitchenPerformance = async (restaurantId, from, to, db) => {
+    const prisma = db || platformPrisma;
   const kotWhere = dateWhere(restaurantId, from, to, "createdAt");
 
   // Hourly KOT volume
@@ -403,7 +413,8 @@ const getKitchenPerformance = async (restaurantId, from, to) => {
 // ══════════════════════════════════════════════════════════════
 // 6. MENU PERFORMANCE REPORTS
 // ══════════════════════════════════════════════════════════════
-const getMenuPerformance = async (restaurantId, from, to) => {
+const getMenuPerformance = async (restaurantId, from, to, db) => {
+    const prisma = db || platformPrisma;
   // Get all menu items for the restaurant
   const menuItems = await prisma.menuItem.findMany({
     where: { restaurantId },
@@ -479,24 +490,24 @@ const getMenuPerformance = async (restaurantId, from, to) => {
   return performance.sort((a, b) => b.quantitySold - a.quantitySold);
 };
 
-const getTopSellingItems = async (restaurantId, from, to, sortBy = "quantity") => {
-  const items = await getMenuPerformance(restaurantId, from, to);
+const getTopSellingItems = async (restaurantId, from, to, sortBy = "quantity", db) => {
+  const items = await getMenuPerformance(restaurantId, from, to, db);
   const sorted = items.filter((i) => i.quantitySold > 0).sort((a, b) => {
     return sortBy === "revenue" ? b.revenue - a.revenue : b.quantitySold - a.quantitySold;
   });
   return { items: sorted, sortBy };
 };
 
-const getLowSellingItems = async (restaurantId, from, to, threshold = 5) => {
-  const items = await getMenuPerformance(restaurantId, from, to);
+const getLowSellingItems = async (restaurantId, from, to, threshold = 5, db) => {
+  const items = await getMenuPerformance(restaurantId, from, to, db);
   // Items with quantity sold <= threshold
   const lowItems = items.filter((i) => i.quantitySold > 0 && i.quantitySold <= threshold)
     .sort((a, b) => a.quantitySold - b.quantitySold);
   return { items: lowItems, threshold };
 };
 
-const getCategoryPerformance = async (restaurantId, from, to) => {
-  const items = await getMenuPerformance(restaurantId, from, to);
+const getCategoryPerformance = async (restaurantId, from, to, db) => {
+  const items = await getMenuPerformance(restaurantId, from, to, db);
 
   const catAgg = {};
   items.forEach((i) => {
@@ -526,7 +537,8 @@ const getCategoryPerformance = async (restaurantId, from, to) => {
 // ══════════════════════════════════════════════════════════════
 // 7. TABLE REPORTS
 // ══════════════════════════════════════════════════════════════
-const getTableSales = async (restaurantId, from, to) => {
+const getTableSales = async (restaurantId, from, to, db) => {
+    const prisma = db || platformPrisma;
   const orderWhere = dateWhere(restaurantId, from, to, "createdAt");
   orderWhere.isDeleted = false;
   orderWhere.tableId = { not: null };
@@ -567,9 +579,10 @@ const getTableSales = async (restaurantId, from, to) => {
     .sort((a, b) => b.totalSales - a.totalSales);
 };
 
-const getTableOccupancy = async (restaurantId) => {
+const getTableOccupancy = async (restaurantId, db) => {
+    const prisma = db || platformPrisma;
   const tables = await prisma.restaurantTable.findMany({
-    where: { restaurantId, isDeleted: undefined },
+    where: { restaurantId },
     select: {
       id: true, tableNo: true, status: true, capacity: true,
       floor: { select: { name: true } },
@@ -600,20 +613,29 @@ const getTableOccupancy = async (restaurantId) => {
 // ══════════════════════════════════════════════════════════════
 // 8. STAFF REPORTS
 // ══════════════════════════════════════════════════════════════
-const getStaffSales = async (restaurantId, from, to) => {
-  // Get staff (users) for the restaurant
-  const staff = await prisma.user.findMany({
-    where: { restaurantId, isActive: true, deletedAt: null },
+const getStaffSales = async (restaurantId, from, to, db) => {
+  // ── Staff users (MANAGER/CASHIER/KITCHEN/WAITER) live in the TENANT schema. ──
+  const tenantPrisma = db || platformPrisma;
+  // Inside a tenant schema every User row already belongs to this restaurant, but
+  // the tenant User.restaurantId column is NULL for migrated staff. Filter by
+  // restaurantId only when reading the legacy public store (SUPER_ADMIN fallback
+  // without a tenant db), where the column is populated.
+  const staffWhere = db
+    ? { isActive: true, deletedAt: null }
+    : { restaurantId, isActive: true, deletedAt: null };
+  const staff = await tenantPrisma.user.findMany({
+    where: staffWhere,
     select: { id: true, name: true, email: true, role: true },
   });
 
-  // Check if orders have a createdBy / userId field for staff attribution
-  // The Order model doesn't have a direct userId, but AuditLog tracks who created orders
+  if (!staff || staff.length === 0) return [];
+
+  // ── Audit logs also live in the tenant schema. ──
   const auditWhere = dateWhere(restaurantId, from, to, "createdAt");
   auditWhere.module = "ORDER";
   auditWhere.action = "CREATE";
 
-  const orderAudits = await prisma.auditLog.findMany({
+  const orderAudits = await tenantPrisma.auditLog.findMany({
     where: auditWhere,
     select: { userId: true, referenceId: true, createdAt: true },
   });
@@ -626,7 +648,6 @@ const getStaffSales = async (restaurantId, from, to) => {
     if (a.referenceId) staffOrders[a.userId].add(a.referenceId);
   });
 
-  // Get sales per staff from the order IDs
   const staffSales = [];
   for (const s of staff) {
     const orderIds = [...(staffOrders[s.id] || [])];
@@ -635,7 +656,7 @@ const getStaffSales = async (restaurantId, from, to) => {
 
     if (orderIds.length > 0) {
       const billWhere = { orderId: { in: orderIds }, isCancelled: false, status: "PAID" };
-      const bills = await prisma.bill.findMany({ where: billWhere, select: { grandTotal: true } });
+      const bills = await tenantPrisma.bill.findMany({ where: billWhere, select: { grandTotal: true } });
       totalSales = bills.reduce((sum, b) => sum + Number(b.grandTotal || 0), 0);
     }
 
@@ -652,11 +673,13 @@ const getStaffSales = async (restaurantId, from, to) => {
   return staffSales.sort((a, b) => b.totalSales - a.totalSales);
 };
 
-const getStaffActivity = async (restaurantId, from, to) => {
+const getStaffActivity = async (restaurantId, from, to, db) => {
+  // AuditLog and User live in the TENANT schema after staff migration.
+  const tenantPrisma = db || platformPrisma;
   const auditWhere = dateWhere(restaurantId, from, to, "createdAt");
   auditWhere.userId = { not: null };
 
-  const audits = await prisma.auditLog.findMany({
+  const audits = await tenantPrisma.auditLog.findMany({
     where: auditWhere,
     include: { user: { select: { id: true, name: true, role: true } } },
     orderBy: { createdAt: "desc" },
@@ -679,20 +702,21 @@ const getStaffActivity = async (restaurantId, from, to) => {
   return Object.values(staffActivity);
 };
 
-const getStaffDiscountCancellation = async (restaurantId, from, to) => {
-  // Bills with discounts — track who discounted
+const getStaffDiscountCancellation = async (restaurantId, from, to, db) => {
+  const tenantPrisma = db || platformPrisma;
+  // Bills with discounts — track who discounted (Bill is a tenant table)
   const billWhere = dateWhere(restaurantId, from, to, "createdAt");
   billWhere.isCancelled = false;
   billWhere.discount = { gt: 0 };
   billWhere.discountedBy = { not: null };
 
-  const discountedBills = await prisma.bill.findMany({
+  const discountedBills = await tenantPrisma.bill.findMany({
     where: billWhere,
     select: { id: true, discount: true, discountedBy: true, createdAt: true },
   });
 
-  // Cancelled orders — from audit logs
-  const cancelAudits = await prisma.auditLog.findMany({
+  // Cancelled orders — from audit logs (AuditLog is in the TENANT schema after migration)
+  const cancelAudits = await (db || platformPrisma).auditLog.findMany({
     where: {
       ...dateWhere(restaurantId, from, to, "createdAt"),
       module: "ORDER",
@@ -711,9 +735,10 @@ const getStaffDiscountCancellation = async (restaurantId, from, to) => {
     staffDiscounts[uid].totalDiscount += Number(b.discount || 0);
   });
 
-  // Enrich with names
+  // Enrich with names — User lives in the TENANT schema after staff migration.
+  const staffPrisma = db || platformPrisma;
   for (const uid of Object.keys(staffDiscounts)) {
-    const user = await prisma.user.findUnique({ where: { id: Number(uid) }, select: { name: true, role: true } });
+    const user = await staffPrisma.user.findUnique({ where: { id: Number(uid) }, select: { name: true, role: true } });
     if (user) {
       staffDiscounts[uid].name = user.name;
       staffDiscounts[uid].role = user.role;
@@ -737,7 +762,8 @@ const getStaffDiscountCancellation = async (restaurantId, from, to) => {
 // ══════════════════════════════════════════════════════════════
 // 9. MANAGEMENT REPORTS
 // ══════════════════════════════════════════════════════════════
-const getDailyClosing = async (restaurantId, date) => {
+const getDailyClosing = async (restaurantId, date, db) => {
+    const prisma = db || platformPrisma;
   // Determine business date in IST
   let reportDate;
   if (date && DATE_ONLY.test(String(date))) {
@@ -846,7 +872,8 @@ const getDailyClosing = async (restaurantId, date) => {
   };
 };
 
-const getMonthlySummary = async (restaurantId, from, to) => {
+const getMonthlySummary = async (restaurantId, from, to, db) => {
+    const prisma = db || platformPrisma;
   const billWhere = dateWhere(restaurantId, from, to, "createdAt");
   billWhere.isCancelled = false;
   billWhere.status = "PAID";
@@ -929,7 +956,8 @@ const getMonthlySummary = async (restaurantId, from, to) => {
       completedOrders: completedCount,
       cancelledOrders: cancelledCount,
       totalItemsSold,
-      averageOrderValue: completedCount > 0 ? totalSales / completedCount : 0,
+      // AOV: totalSales / paid bills count (consistent with Sales Report)
+      averageOrderValue: bills.length > 0 ? totalSales / bills.length : 0,
       totalTax,
       totalDiscount,
     },
@@ -940,16 +968,35 @@ const getMonthlySummary = async (restaurantId, from, to) => {
   };
 };
 
-const getRestaurantPerformance = async (restaurantId, from, to) => {
-  // Combine multiple metrics for a holistic view
+const getRestaurantPerformance = async (restaurantId, from, to, db) => {
   const [salesComparison, hourlySales, cancellation, categoryPerf] = await Promise.all([
-    getSalesComparisonReport(restaurantId, from, to, from, to).catch(() => null),
-    getHourlySalesReport(restaurantId, from, to).catch(() => null),
-    getCancellationReport(restaurantId, from, to).catch(() => null),
-    getCategoryPerformance(restaurantId, from, to).catch(() => []),
+    getSalesComparisonReport(restaurantId, from, to, from, to, db).catch(() => null),
+    getHourlySalesReport(restaurantId, from, to, db).catch(() => null),
+    getCancellationReport(restaurantId, from, to, db).catch(() => null),
+    getCategoryPerformance(restaurantId, from, to, db).catch(() => []),
   ]);
 
+  // Extract KPI totals from salesComparison so the frontend can read them
+  // directly (perf.totalSales, perf.totalOrders, etc.).
+  const current = salesComparison?.current || {};
+
   return {
+    // Top-level KPI fields — the frontend reads perf.totalSales, perf.totalOrders, etc.
+    totalSales: current.totalSales || 0,
+    totalOrders: current.totalOrders || 0,
+    totalItemsSold: current.totalItemsSold || 0,
+    averageOrderValue: current.averageOrderValue || 0,
+    totalTax: current.totalTax || 0,
+    totalDiscount: current.totalDiscount || 0,
+    // Nested summary for backwards compatibility
+    summary: {
+      totalSales: current.totalSales || 0,
+      totalOrders: current.totalOrders || 0,
+      totalItemsSold: current.totalItemsSold || 0,
+      averageOrderValue: current.averageOrderValue || 0,
+      totalTax: current.totalTax || 0,
+      totalDiscount: current.totalDiscount || 0,
+    },
     hourlySales: hourlySales || { hours: [], summary: {} },
     cancellation: cancellation || { summary: {}, byReason: {}, orders: [] },
     categoryPerformance: categoryPerf || [],

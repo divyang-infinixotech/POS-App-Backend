@@ -19,13 +19,11 @@ const {
 } = require("../utils/response");
 
 const getAllNotifications = async (req, res) => {
-
     try {
-
         const notifications = await getNotifications(
-
-            req.user.restaurantId
-
+            req.user.restaurantId,
+            null,
+            req.tenantDb || null
         );
 
         return successResponse(
@@ -54,15 +52,11 @@ const getAllNotifications = async (req, res) => {
 
 };
 const readNotification = async (req, res) => {
-
     try {
-
         const notification = await markAsRead(
-
             req.user.restaurantId,
-
-            req.params.id
-
+            req.params.id,
+            req.tenantDb || null
         );
 
         return successResponse(
@@ -91,13 +85,11 @@ const readNotification = async (req, res) => {
 
 };
 const readAllNotifications = async (req, res) => {
-
     try {
-
         await markAllAsRead(
-
-            req.user.restaurantId
-
+            req.user.restaurantId,
+            null,
+            req.tenantDb || null
         );
 
         return successResponse(
@@ -126,15 +118,11 @@ const readAllNotifications = async (req, res) => {
 
 };
 const removeNotification = async (req, res) => {
-
     try {
-
         await deleteNotification(
-
             req.user.restaurantId,
-
-            req.params.id
-
+            req.params.id,
+            req.tenantDb || null
         );
 
         return successResponse(

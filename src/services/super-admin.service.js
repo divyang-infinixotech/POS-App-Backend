@@ -1,4 +1,4 @@
-const prisma = require("../config/prisma");
+const { platformPrisma: prisma } = require("../config/tenantPrisma");
 const bcrypt = require("bcryptjs");
 const { planToSnapshot, computeDates, computeExpiryDate, addDays } = require("../utils/subscription");
 const { FEATURE_SETTINGS_MAP, AVAILABLE_RESTAURANT_MODULES } = require("../config/subscription.config");
@@ -86,7 +86,7 @@ const BUSINESS_MODE_PRESETS = {
     enableMenu: true,
     enableReports: true,
     enableBilling: true,
-    enablePosOrdering: false,
+    // POS Ordering works in ALL modes — controlled by enablePosOrdering toggle
   },
   BASIC_POS: {
     enableCounterSale: true,
@@ -160,22 +160,37 @@ const getDashboard = async () => {
   today.setHours(0, 0, 0, 0);
   var firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
 
-  var [totalRestaurants, activeRestaurants, inactiveRestaurants, suspendedRestaurants, trialRestaurants, expiredSubscriptions, totalUsers, activeUsers, todayOrders, todayRevenueAgg, monthlyRevenueAgg, newRestaurantsThisMonth, activeSubscriptions, pendingRenewals] = await Promise.all([
+  // ── Platform-scope KPIs ONLY. Tenant operational data (orders, bills,
+  // customer payments, KOTs, tables…) is NEVER counted on the platform
+  // dashboard — Super Admin is a platform administrator, not a restaurant
+  // operator. Revenue is derived from SubscriptionPayment (money paid to the
+  // platform), never from restaurant POS bills. ──
+  var [totalRestaurants, activeRestaurants, inactiveRestaurants, suspendedRestaurants, trialRestaurants, expiredSubscriptions, totalUsers, activeUsers, newRestaurantsThisMonth, activeSubscriptions, pendingRenewals] = await Promise.all([
     prisma.restaurant.count({ where: { deletedAt: null } }),
     prisma.restaurant.count({ where: { status: "ACTIVE" } }),
     prisma.restaurant.count({ where: { status: "INACTIVE" } }),
     prisma.restaurant.count({ where: { status: "SUSPENDED" } }),
     prisma.restaurant.count({ where: { subscriptionPlan: "TRIAL" } }),
     prisma.subscription.count({ where: { status: "EXPIRED" } }),
-    prisma.user.count({ where: { deletedAt: null } }),
-    prisma.user.count({ where: { isActive: true } }),
-    prisma.order.count({ where: { createdAt: { gte: today } } }),
-    prisma.bill.aggregate({ _sum: { grandTotal: true }, where: { paymentStatus: "PAID", createdAt: { gte: today } } }),
-    prisma.bill.aggregate({ _sum: { grandTotal: true }, where: { paymentStatus: "PAID", createdAt: { gte: firstOfMonth } } }),
+    // Platform Users = SUPER_ADMIN + ADMIN from public.User (NEVER tenant staff)
+    prisma.user.count({ where: { deletedAt: null, role: { in: ["SUPER_ADMIN", "ADMIN"] } } }),
+    prisma.user.count({ where: { isActive: true, role: { in: ["SUPER_ADMIN", "ADMIN"] } } }),
     prisma.restaurant.count({ where: { createdAt: { gte: firstOfMonth } } }),
     prisma.subscription.count({ where: { status: "ACTIVE" } }),
     prisma.subscription.count({ where: { status: { in: ["ACTIVE", "TRIAL"] }, expiryDate: { lte: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) } } }),
   ]);
+
+  // Online/offline is a CONNECTION/AVAILABILITY signal only: a restaurant is
+  // "online" when one of its platform ADMIN users logged in within the last
+  // 15 minutes. No tenant operational data is inspected.
+  var ONLINE_WINDOW_MS = 15 * 60 * 1000;
+  var onlineThreshold = new Date(Date.now() - ONLINE_WINDOW_MS);
+  var recentlyActiveAdmins = await prisma.user.findMany({
+    where: { role: "ADMIN", isActive: true, deletedAt: null, lastLogin: { gte: onlineThreshold } },
+    select: { restaurantId: true },
+  });
+  var onlineRestaurants = new Set(recentlyActiveAdmins.map(function (u) { return u.restaurantId; }).filter(Boolean)).size;
+  var offlineRestaurants = Math.max(0, totalRestaurants - onlineRestaurants);
 
   var monthLabels = [];
   for (var i = 11; i >= 0; i--) {
@@ -188,8 +203,9 @@ const getDashboard = async () => {
   var monthlyGrowthPromises = monthLabels.map(function(ml) {
     return prisma.restaurant.count({ where: { createdAt: { gte: ml.start, lt: ml.end } } });
   });
+  // Revenue trend = PAID subscription payments to the PLATFORM, never POS bills.
   var subscriptionRevenuePromises = monthLabels.map(function(ml) {
-    return prisma.bill.aggregate({ _sum: { grandTotal: true }, where: { paymentStatus: "PAID", createdAt: { gte: ml.start, lt: ml.end } } });
+    return prisma.subscriptionPayment.aggregate({ _sum: { amount: true }, where: { status: "PAID", createdAt: { gte: ml.start, lt: ml.end } } });
   });
 
   var [growthCounts, revenueResults] = await Promise.all([
@@ -201,7 +217,7 @@ const getDashboard = async () => {
     return { label: ml.label, count: growthCounts[i] };
   });
   var subscriptionRevenue = monthLabels.map(function(ml, i) {
-    return { label: ml.label, revenue: revenueResults[i]._sum.grandTotal || 0 };
+    return { label: ml.label, revenue: revenueResults[i]._sum.amount || 0 };
   });
 
   var planDistribution = await prisma.subscription.groupBy({ by: ["plan", "status"], _count: { id: true }, orderBy: [{ plan: "asc" }] });
@@ -222,9 +238,8 @@ const getDashboard = async () => {
     expiredSubscriptions: expiredSubscriptions,
     totalUsers: totalUsers,
     activeUsers: activeUsers,
-    todayOrders: todayOrders,
-    todayRevenue: todayRevenueAgg._sum.grandTotal || 0,
-    monthlyRevenue: monthlyRevenueAgg._sum.grandTotal || 0,
+    onlineRestaurants: onlineRestaurants,
+    offlineRestaurants: offlineRestaurants,
     newRestaurantsThisMonth: newRestaurantsThisMonth,
     activeSubscriptions: activeSubscriptions,
     pendingRenewals: pendingRenewals,
@@ -270,21 +285,20 @@ const listRestaurants = async function(opts) {
 };
 
 const restaurantDetails = async function(id) {
+  // Platform-scope detail ONLY: restaurant profile, subscription, plan and
+  // platform users (ADMINs). Tenant operational statistics (orders, bills,
+  // customers, tables, menu, KOTs, POS payments…) are intentionally NOT
+  // exposed to Super Admin — that data lives in the tenant schema and belongs
+  // to the restaurant operator.
   var r = await prisma.restaurant.findUnique({
     where: { id: Number(id) },
-    include: { users: { select: { id: true, name: true, email: true, phone: true, role: true, isActive: true, lastLogin: true, createdAt: true } }, restaurantSetting: true, subscription: true },
+    include: {
+      users: { select: { id: true, name: true, email: true, phone: true, role: true, isActive: true, lastLogin: true, createdAt: true } },
+      subscription: true,
+    },
   });
   if (!r) throw new Error("Restaurant not found");
-  var [totalOrders, totalBills, totalCustomers, totalTables, totalCategories, totalMenu, totalPayments, revenue] = await Promise.all([
-    prisma.order.count({ where: { restaurantId: r.id } }), prisma.bill.count({ where: { restaurantId: r.id } }),
-    prisma.customer.count({ where: { restaurantId: r.id } }), prisma.restaurantTable.count({ where: { restaurantId: r.id } }),
-    prisma.category.count({ where: { restaurantId: r.id } }), prisma.menuItem.count({ where: { restaurantId: r.id } }),
-    prisma.payment.count({ where: { restaurantId: r.id } }),
-    prisma.bill.aggregate({ where: { restaurantId: r.id, paymentStatus: "PAID" }, _sum: { grandTotal: true } }),
-  ]);
-  return Object.assign({}, r, {
-    statistics: { totalUsers: r.users.length, totalOrders: totalOrders, totalBills: totalBills, totalCustomers: totalCustomers, totalTables: totalTables, totalCategories: totalCategories, totalMenu: totalMenu, totalPayments: totalPayments, totalRevenue: revenue._sum.grandTotal || 0 },
-  });
+  return r;
 };
 
 var createRestaurant = async function(data, userId, ipAddress, userAgent) {
@@ -306,15 +320,38 @@ var createRestaurant = async function(data, userId, ipAddress, userAgent) {
   if (existingPhone) throw new Error("A restaurant with this phone number already exists");
   if (email) { var existingEmail = await prisma.restaurant.findUnique({ where: { email: email } }); if (existingEmail) throw new Error("A restaurant with this email already exists"); }
   var hashedPassword = await bcrypt.hash(adminPassword, 10);
+  var { initializeTenantSchema } = require("../utils/tenantSchema");
+  var { getTenantClient } = require("../config/tenantPrisma");
+
+  // ── Phase 1: Create restaurant record to get the ID ──
+  var restaurant = await prisma.restaurant.create({ data: { name: name, ownerName: ownerName, phone: mobile, email: email || null, gstNumber: gstNumber || null, fssaiNumber: fssaiNumber || null, address: address || null, country: country || "India", state: state || null, city: city || null, pincode: pincode || null, timezone: timezone, currency: currency, language: language, logo: logo || null, subscriptionPlan: plan.code, status: status, businessType: businessType, website: website || null } });
+  console.log("[Onboarding] Restaurant created with id:", restaurant.id);
+
+  // ── Phase 2: Create tenant schema (DDL auto-commits, not inside a transaction) ──
+  var tenantResult = await initializeTenantSchema(restaurant.id, {});
+  var tenantDb = getTenantClient(tenantResult.schemaName);
+  console.log("[Onboarding] Tenant schema ready:", tenantResult.schemaName);
+
+  // ── Phase 3: Complete remaining setup in a transaction ──
   return prisma.$transaction(async function(tx) {
-    var restaurant = await tx.restaurant.create({ data: { name: name, ownerName: ownerName, phone: mobile, email: email || null, gstNumber: gstNumber || null, fssaiNumber: fssaiNumber || null, address: address || null, country: country || "India", state: state || null, city: city || null, pincode: pincode || null, timezone: timezone, currency: currency, language: language, logo: logo || null, subscriptionPlan: plan.code, status: status, businessType: businessType, website: website || null } });
-    await tx.restaurantSetting.create({ data: { restaurantId: restaurant.id, restaurantName: name, currency: currency, timezone: timezone, language: language, taxPercentage: 0, serviceCharge: 0, roundOffEnabled: true, billPrefix: "BILL", invoicePrefix: "INV", kotPrefix: "KOT", receiptFooter: "Thank You! Visit Again." } });
+    // Create restaurant setting in tenant schema
+    await tenantDb.restaurantSetting.create({ data: { restaurantId: restaurant.id, restaurantName: name, currency: currency, timezone: timezone, language: language, taxPercentage: 0, serviceCharge: 0, roundOffEnabled: true, billPrefix: "BILL", invoicePrefix: "INV", kotPrefix: "KOT", receiptFooter: "Thank You! Visit Again." } });
     var sub = await tx.subscription.create({ data: { restaurantId: restaurant.id, planId: plan.id, plan: plan.code, status: plan.code === "TRIAL" ? "TRIAL" : "ACTIVE", businessMode: snapshot.businessMode, startDate: dates.startDate, expiryDate: dates.expiryDate, nextRenewalDate: dates.expiryDate, billingCycle: billingCycle, autoRenew: snapshot.autoRenew, maxUsers: data.maxUsers != null ? Number(data.maxUsers) : snapshot.maxUsers, maxTables: data.maxTables != null ? Number(data.maxTables) : snapshot.maxTables, maxMenuItems: data.maxMenuItems != null ? Number(data.maxMenuItems) : snapshot.maxMenuItems, maxFloors: snapshot.maxFloors, maxPrinters: snapshot.maxPrinters, maxBranches: snapshot.maxBranches, maxOrdersPerMonth: snapshot.maxOrdersPerMonth, storageLimitMB: snapshot.storageLimitMB, features: snapshot.features, amount: snapshot.amount } });
     await applyPlanFeaturesToSettings(tx, restaurant.id, snapshot.features, snapshot.businessMode);
     var admin = await tx.user.create({ data: { restaurantId: restaurant.id, name: adminName, email: adminEmail, password: hashedPassword, role: "ADMIN", isActive: true } });
     await recordSubscriptionHistory(tx, { restaurantId: restaurant.id, changeType: "CREATION", previousPlanId: null, newPlanId: plan.id, previousPlan: null, newPlan: plan.code, previousStatus: null, newStatus: plan.code === "TRIAL" ? "TRIAL" : "ACTIVE", billingCycle: billingCycle, amount: snapshot.amount, expiryDate: dates.expiryDate, changedBy: userId, notes: "Restaurant created with the " + plan.name + " plan", ipAddress: ipAddress });
-    await tx.notification.create({ data: { restaurantId: restaurant.id, userId: userId, title: "New Restaurant Created", message: "Restaurant " + name + " created on " + plan.name + " plan. Admin: " + adminName + " (" + adminEmail + ")", type: "SUCCESS" } });
-    await createAuditLog({ restaurantId: restaurant.id, userId: userId, module: "USER", action: "CREATE", description: "Created restaurant " + name + " with admin " + adminName + " on " + plan.name + " plan", referenceId: restaurant.id, referenceNo: name, ipAddress: ipAddress, userAgent: userAgent }, tx);
+    // ── Notifications & audit — BOTH planes stay in their own store ──
+    // Tenant plane: restaurant users get the event in their tenant schema.
+    var { createNotification } = require("../services/notification.service");
+    await createNotification(tenantDb, { restaurantId: restaurant.id, userId: userId, title: "New Restaurant Created", message: "Restaurant " + name + " created on " + plan.name + " plan. Admin: " + adminName + " (" + adminEmail + ")", type: "SUCCESS" });
+    await createAuditLog({ restaurantId: restaurant.id, userId: userId, module: "USER", action: "CREATE", description: "Created restaurant " + name + " with admin " + adminName + " on " + plan.name + " plan", referenceId: restaurant.id, referenceNo: name, ipAddress: ipAddress, userAgent: userAgent }, tenantDb);
+    // Platform plane: Super Admin feed + platform audit log (public schema).
+    try {
+      await createNotification(prisma, { restaurantId: restaurant.id, userId: userId, title: "New Restaurant Created", message: "Restaurant " + name + " created on " + plan.name + " plan. Admin: " + adminName + " (" + adminEmail + ")", type: "SYSTEM" });
+      await createAuditLog({ restaurantId: restaurant.id, userId: userId, module: "USER", action: "CREATE", description: "Created restaurant " + name + " with admin " + adminName + " on " + plan.name + " plan", referenceId: restaurant.id, referenceNo: name, ipAddress: ipAddress, userAgent: userAgent }, prisma);
+    } catch (platformErr) {
+      console.error("[Onboarding] Platform notification/audit failed (non-critical):", platformErr.message);
+    }
     return { id: restaurant.id, name: restaurant.name, plan: plan.code, admin: { id: admin.id, name: admin.name, email: admin.email } };
   });
 };
@@ -384,9 +421,12 @@ var restoreRestaurant = async function(id) {
 
 var listUsers = async function(opts) {
   if (!opts) opts = {};
-  var where = { deletedAt: null, role: { not: "SUPER_ADMIN" } };
+  // Platform user management operates on public.User ONLY — restaurant staff
+  // (MANAGER/CASHIER/WAITER/KITCHEN) live in tenant schemas and are managed
+  // from each restaurant's Staff Roster, never here.
+  var where = { deletedAt: null, role: "ADMIN" };
   if (opts.search) { where.OR = [{ name: { contains: opts.search, mode: "insensitive" } }, { email: { contains: opts.search, mode: "insensitive" } }]; }
-  if (opts.role) where.role = opts.role;
+  if (opts.role && ["ADMIN", "SUPER_ADMIN"].indexOf(opts.role) !== -1) where.role = opts.role;
   if (opts.status === "active") where.isActive = true;
   if (opts.status === "inactive") where.isActive = false;
   var pg = getPagination(opts.page || 1, opts.limit || 20);
@@ -402,14 +442,68 @@ var listUsers = async function(opts) {
 
 var adminCreateUser = async function(data, userId, ipAddress, userAgent) {
   var restaurantId = data.restaurantId, name = data.name, email = data.email, password = data.password, role = data.role, phone = data.phone, avatar = data.avatar, isActive = data.isActive !== undefined ? data.isActive : true;
+  var STAFF_ROLES = ["MANAGER", "CASHIER", "KITCHEN", "WAITER"];
+  var PLATFORM_ROLES = ["SUPER_ADMIN", "ADMIN"];
+
   if (!restaurantId) throw new Error("restaurantId is required");
   var restaurant = await prisma.restaurant.findUnique({ where: { id: Number(restaurantId) } });
   if (!restaurant) throw new Error("Restaurant not found");
+
+  // Staff roles must go to tenant schema
+  if (STAFF_ROLES.indexOf(role) !== -1) {
+    // Verify restaurant is ACTIVE
+    if (restaurant.status !== "ACTIVE") throw new Error("Cannot create staff in a non-ACTIVE restaurant");
+
+    // Verify tenant schema exists
+    if (!restaurant.tenantSchema) throw new Error("Restaurant has no tenant schema assigned");
+
+    // Get tenant client
+    var { getTenantClient } = require("../config/tenantPrisma");
+    var tenantDb;
+    try {
+      tenantDb = getTenantClient(restaurant.tenantSchema);
+    } catch (err) {
+      throw new Error("Could not access tenant schema: " + err.message);
+    }
+
+    // Check email uniqueness in tenant schema
+    var existingTenantUser = null;
+    try {
+      existingTenantUser = await tenantDb.user.findUnique({ where: { email: email } });
+    } catch (err) {
+      throw new Error("Tenant schema error: " + err.message);
+    }
+    if (existingTenantUser) throw new Error("A user with this email already exists in the restaurant");
+
+    // Also check public schema for global email uniqueness
+    var existingPublic = await prisma.user.findUnique({ where: { email: email } });
+    if (existingPublic) throw new Error("A user with this email already exists in the platform");
+
+    var hashedPassword = await bcrypt.hash(password, 10);
+    var tenantUser = await tenantDb.user.create({
+      data: {
+        name: name,
+        email: email,
+        password: hashedPassword,
+        role: role,
+        phone: phone || null,
+        avatar: avatar || null,
+        isActive: isActive
+      }
+    });
+
+    await createAuditLog({ restaurantId: Number(restaurantId), userId: userId, module: "USER", action: "CREATE", description: "Created staff user " + name + " (" + email + ") with role " + role + " in tenant " + restaurant.tenantSchema, referenceId: tenantUser.id, referenceNo: email, ipAddress: ipAddress, userAgent: userAgent });
+    return { id: tenantUser.id, name: tenantUser.name, email: tenantUser.email, role: tenantUser.role };
+  }
+
+  // Platform roles (SUPER_ADMIN, ADMIN) stay in public.User
+  if (PLATFORM_ROLES.indexOf(role) === -1) throw new Error("Invalid role");
+
   var existing = await prisma.user.findUnique({ where: { email: email } });
   if (existing) throw new Error("A user with this email already exists");
   var hashedPassword = await bcrypt.hash(password, 10);
   var user = await prisma.user.create({ data: { restaurantId: Number(restaurantId), name: name, email: email, password: hashedPassword, role: role, phone: phone || null, avatar: avatar || null, isActive: isActive } });
-  await createAuditLog({ restaurantId: Number(restaurantId), userId: userId, module: "USER", action: "CREATE", description: "Created user " + name + " (" + email + ") with role " + role, referenceId: user.id, referenceNo: email, ipAddress: ipAddress, userAgent: userAgent });
+  await createAuditLog({ restaurantId: Number(restaurantId), userId: userId, module: "USER", action: "CREATE", description: "Created platform user " + name + " (" + email + ") with role " + role, referenceId: user.id, referenceNo: email, ipAddress: ipAddress, userAgent: userAgent });
   return { id: user.id, name: user.name, email: user.email, role: user.role };
 };
 
@@ -454,7 +548,9 @@ var adminDeleteUser = async function(id) {
 var adminChangeUserRole = async function(id, role) {
   var user = await prisma.user.findUnique({ where: { id: Number(id) } });
   if (!user) throw new Error("User not found");
-  if (["ADMIN", "MANAGER", "CASHIER", "WAITER", "KITCHEN"].indexOf(role) === -1) throw new Error("Invalid role");
+  // Platform users may only hold platform roles; tenant staff roles belong to
+  // the tenant User table and are managed from the restaurant Staff Roster.
+  if (["ADMIN"].indexOf(role) === -1) throw new Error("Invalid role");
   return prisma.user.update({ where: { id: Number(id) }, data: { role: role } });
 };
 
@@ -917,12 +1013,14 @@ var getSubscriptionRevenueReport = async function() {
 };
 
 var getUserGrowthReport = async function() {
+  // Platform user growth = SUPER_ADMIN + ADMIN only (public.User). Tenant
+  // staff live in restaurant schemas and are NOT part of platform growth.
   var months = [];
   for (var i = 11; i >= 0; i--) {
     var d = new Date(); d.setMonth(d.getMonth() - i);
     var start = new Date(d.getFullYear(), d.getMonth(), 1);
     var end = new Date(d.getFullYear(), d.getMonth() + 1, 1);
-    var count = await prisma.user.count({ where: { createdAt: { gte: start, lt: end } } });
+    var count = await prisma.user.count({ where: { createdAt: { gte: start, lt: end }, role: { in: ["SUPER_ADMIN", "ADMIN"] } } });
     months.push({ label: start.toLocaleDateString("en-US", { month: "short", year: "2-digit" }), count: count });
   }
   return months;
@@ -939,10 +1037,43 @@ var getUpcomingRenewalsReport = async function() {
   return { subscriptions: subscriptions };
 };
 
+/**
+ * Restaurant Activity — redefined as PLATFORM activity.
+ * Tenant operational signals (order counts, bills, KOTs, POS payments) are
+ * deliberately excluded. Activity is measured by account lifecycle signals
+ * that live in the public schema: last ADMIN login, account status, plan,
+ * subscription status, created date and renewal date.
+ */
 var getRestaurantActivityReport = async function() {
-  var restaurants = await prisma.restaurant.findMany({ where: { deletedAt: null }, include: { _count: { select: { orders: true, bills: true, users: true } } }, orderBy: { createdAt: "desc" }, take: 50 });
-  var sorted = [].concat(restaurants).sort(function(a, b) { return b._count.orders - a._count.orders; });
-  return { mostActive: sorted.slice(0, 10).map(function(r) { return { name: r.name, orderCount: r._count.orders }; }), leastActive: sorted.slice(-10).reverse().map(function(r) { return { name: r.name, orderCount: r._count.orders }; }) };
+  var restaurants = await prisma.restaurant.findMany({
+    where: { deletedAt: null },
+    include: {
+      users: { where: { role: "ADMIN" }, select: { lastLogin: true }, orderBy: { lastLogin: "desc" }, take: 1 },
+      subscription: { select: { status: true, plan: true, expiryDate: true, nextRenewalDate: true } },
+    },
+    take: 200,
+  });
+  var mapped = restaurants.map(function(r) {
+    return {
+      name: r.name,
+      status: r.status,
+      plan: r.subscriptionPlan,
+      subscriptionStatus: r.subscription ? r.subscription.status : null,
+      lastLogin: (r.users && r.users.length > 0) ? r.users[0].lastLogin : null,
+      createdAt: r.createdAt,
+      expiryDate: r.subscription ? (r.subscription.expiryDate || r.subscription.nextRenewalDate) : null,
+    };
+  });
+  var byLogin = [].concat(mapped).sort(function(a, b) {
+    return (b.lastLogin ? new Date(b.lastLogin).getTime() : 0) - (a.lastLogin ? new Date(a.lastLogin).getTime() : 0);
+  });
+  var byCreated = [].concat(mapped).sort(function(a, b) {
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+  });
+  return {
+    recentlyActive: byLogin.slice(0, 10),
+    leastActive: byCreated.slice(0, 10),
+  };
 };
 
 // ─── SETTINGS ───
@@ -1037,10 +1168,16 @@ var updateSystemSettings = async function(bulk) {
 
 // ─── AUDIT LOGS ───
 
+// Platform audit modules — tenant operational modules (ORDER, KOT, BILL, MENU,
+// TABLE, CUSTOMER, FLOOR, CATEGORY, PRINTER…) live in tenant AuditLog tables
+// and must never appear in the Super Admin audit trail.
+var PLATFORM_AUDIT_MODULES = ["AUTH", "USER", "SETTINGS", "SUBSCRIPTION", "PAYMENT", "DASHBOARD", "REPORT", "NOTIFICATION"];
+
 var getAuditLogs = async function(opts) {
   if (!opts) opts = {};
   var where = {};
-  if (opts.module) where.module = opts.module;
+  if (opts.module && PLATFORM_AUDIT_MODULES.indexOf(opts.module) !== -1) where.module = opts.module;
+  else if (opts.module) return { logs: [], pagination: { page: Number(opts.page || 1), limit: Number(opts.limit || 25), total: 0, totalPages: 0 } };
   var pg = getPagination(opts.page || 1, opts.limit || 25);
   var [logs, total] = await Promise.all([
     prisma.auditLog.findMany({ where: where, orderBy: { createdAt: "desc" }, skip: pg.skip, take: pg.take, include: { user: { select: { id: true, name: true, email: true, role: true } }, restaurant: { select: { id: true, name: true } } } }),
@@ -1077,12 +1214,18 @@ var updateSupportTicket = async function(id, data) {
 
 // ─── NOTIFICATIONS ───
 
+// Platform notification types. Tenant operational notifications (New Order,
+// Payment Received, KOT, Bill, table/kitchen/cashier events) are written to
+// each restaurant's tenant Notification table and are NEVER surfaced here.
+var PLATFORM_NOTIFICATION_TYPES = ["SUBSCRIPTION", "SYSTEM"];
+
 var getNotifications = async function(opts) {
   if (!opts) opts = {};
+  var where = { type: { in: PLATFORM_NOTIFICATION_TYPES } };
   var pg = getPagination(opts.page || 1, opts.limit || 20);
   var [notifications, total] = await Promise.all([
-    prisma.notification.findMany({ orderBy: { createdAt: "desc" }, skip: pg.skip, take: pg.take, include: { restaurant: { select: { id: true, name: true } } } }),
-    prisma.notification.count(),
+    prisma.notification.findMany({ where: where, orderBy: { createdAt: "desc" }, skip: pg.skip, take: pg.take, include: { restaurant: { select: { id: true, name: true } } } }),
+    prisma.notification.count({ where: where }),
   ]);
   return { notifications: notifications, pagination: { page: Number(opts.page || 1), limit: Number(opts.limit || 20), total: total, totalPages: Math.ceil(total / Number(opts.limit || 20)) } };
 };

@@ -27,49 +27,27 @@ const audit = (module, action, getDescription) => {
 
                             description = getDescription;
 
-                        }
-
-                        await createAuditLog({
-
+                        }                        await createAuditLog({
                             restaurantId:
-
                                 req.user?.restaurantId || null,
-
                             userId:
-
                                 req.user?.id || null,
-
                             module,
-
                             action,
-
                             description,
-
                             referenceId:
-
                                 body?.data?.id ||
-
                                 body?.user?.id ||
-
                                 null,
-
                             referenceNo:
-
                                 body?.data?.billNo ||
-
                                 body?.data?.orderNo ||
-
                                 body?.data?.kotNo ||
-
                                 null,
-
                             ipAddress: req.ip,
-
                             userAgent:
-
                                 req.get("User-Agent")
-
-                        });
+                        }, req.tenantDb);
 
                     } catch (error) {
 

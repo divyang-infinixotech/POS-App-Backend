@@ -357,9 +357,11 @@ const renewedYear = computeExpiryDate(curExpiry, "YEARLY");
 eq(fmt(renewedYear), "2027-08-30", "30 Aug 2026 + 1 year = 30 Aug 2027");
 
 sub("computeBaseExpiry — future expiry anchors the extension");
-const subFuture = { expiryDate: new Date("2026-08-30T00:00:00.000Z") };
+// Expiry is set relative to the run date (always 30 days ahead) so the fixture
+// stays genuinely in the future and the test never drifts stale over time.
+const subFuture = { expiryDate: daysFromNow(30) };
 const anchored = computeBaseExpiry(subFuture);
-eq(anchored.toISOString().slice(0, 10), "2026-08-30", "Future expiry is preserved as the base");
+eq(fmt(anchored), fmt(subFuture.expiryDate), "Future expiry is preserved as the base");
 
 sub("computeBaseExpiry — expired/past expiry starts from today");
 const subExpired = { expiryDate: new Date("2026-01-01T00:00:00.000Z") };
@@ -467,10 +469,11 @@ eq(
   "Expired subscription renews from today"
 );
 // And an ACTIVE renewal anchors to the CURRENT expiry (never discards days)
+const renewedBase = computeBaseExpiry(subFuture);
 eq(
-  computeExpiryDate(computeBaseExpiry(subFuture), "MONTHLY").toISOString().slice(0, 10),
-  "2026-09-30",
-  "Active renewal extends from current expiry (30 Aug → 30 Sep)"
+  fmt(computeExpiryDate(renewedBase, "MONTHLY")),
+  fmt(computeExpiryDate(subFuture.expiryDate, "MONTHLY")),
+  "Active renewal extends from the future expiry (+1 month from the expiry date)"
 );
 
 sub("Test 10 — active upgrade (higher-priced different plan)");

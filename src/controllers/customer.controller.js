@@ -1,4 +1,4 @@
-const prisma = require("../config/prisma");
+// tenantDb is available as req.tenantDb (attached by auth middleware)
 
 const {
 
@@ -20,13 +20,9 @@ const getCustomers = async (req, res) => {
             );
         }
 
-        const customers = await prisma.customer.findMany({
+        const customers = await req.tenantDb.customer.findMany({
 
-    where: {
-
-        restaurantId: req.user.restaurantId
-
-    },
+    where: {},
 
     orderBy: [
 
@@ -68,11 +64,9 @@ const createWalkInCustomer = async (req, res) => {
 
     try {
 
-        const existing = await prisma.customer.findFirst({
+        const existing = await req.tenantDb.customer.findFirst({
 
            where: {
-
-    restaurantId: req.user.restaurantId,
 
     type: "WALK_IN"
 
@@ -94,7 +88,7 @@ const createWalkInCustomer = async (req, res) => {
 
         }
 
-        const customer = await prisma.customer.create({
+        const customer = await req.tenantDb.customer.create({
 
             data: {
                 restaurantId: req.user.restaurantId,

@@ -1,4 +1,4 @@
-const prisma = require("../config/prisma");
+// tenantDb is available as req.tenantDb (attached by auth middleware)
 const {
     generateKOTNumber
 } = require("../utils/numberGenerator");
@@ -14,114 +14,177 @@ const {
 const { emitKotEvent } = require("../services/socket");
 
 const createKOT = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
-
         const { orderId, notes } = req.body;
-
         const order = await prisma.order.findFirst({
-
             where: {
-
-                id: Number(orderId),
-
-                restaurantId: req.user.restaurantId
-
+                id: Number(orderId)
+            },
+            include: {
+                orderItems: true
             }
-
         });
 
         if (!order) {
-
-            return errorResponse(
-                res,
-                "Order not found",
-                404
-            );
-
+            return errorResponse(res, "Order not found", 404);
         }
 
-        // Allow multiple KOTs per order (e.g., when adding items to an existing order)
-        const kot = await prisma.kOT.create({
+        // ── Create KOT + KOTItems + update sentQuantity in a SINGLE transaction ──
+        // Delta calculation happens INSIDE the transaction to prevent race conditions:
+        // two simultaneous requests cannot both see the same pending items.
+        const kot = await prisma.$transaction(async (tx) => {
+            // Lock the OrderItem rows for this order to prevent concurrent KOT creation
+            const lockedOrderItems = await tx.orderItem.findMany({
+                where: { orderId: Number(orderId) },
+                orderBy: { id: 'asc' }
+            });
 
-            data: {
-                restaurantId: req.user.restaurantId,
+            // Load ALL existing KOTItems for these OrderItems (authoritative history)
+            const orderItemIds = lockedOrderItems.map(oi => oi.id);
+            const existingKOTItems = orderItemIds.length > 0
+                ? await tx.kOTItem.findMany({
+                    where: {
+                        orderItemId: { in: orderItemIds }
+                    },
+                    select: {
+                        orderItemId: true,
+                        quantity: true
+                    }
+                })
+                : [];
 
-                kotNo: await generateKOTNumber(),
-
-                orderId,
-
-                notes,
-
-                status: "PENDING"
-
+            // Aggregate sent quantity per orderItemId from KOTItem records
+            const sentByOrderItem = new Map();
+            for (const ki of existingKOTItems) {
+                sentByOrderItem.set(
+                    ki.orderItemId,
+                    (sentByOrderItem.get(ki.orderItemId) || 0) + ki.quantity
+                );
             }
 
+            // Calculate pending quantity for each OrderItem
+            const deltaItems = [];
+            for (const oi of lockedOrderItems) {
+                const historicalKOTQuantity = sentByOrderItem.get(oi.id) || 0;
+                const pending = Math.max(0, oi.quantity - historicalKOTQuantity);
+
+                if (pending > 0) {
+                    deltaItems.push({
+                        orderItem: oi,
+                        pendingQty: pending,
+                        historicalKOTQuantity
+                    });
+                }
+            }
+
+            if (deltaItems.length === 0) {
+                const noItemsErr = new Error("NO_PENDING_ITEMS");
+                noItemsErr.isNoPending = true;
+                throw noItemsErr;
+            }
+
+            const newKot = await tx.kOT.create({
+                data: {
+                    restaurantId: req.user.restaurantId,
+                    kotNo: await generateKOTNumber(tx),
+                    orderId,
+                    notes,
+                    status: "PENDING"
+                }
+            });
+
+            // Create KOTItem records for each delta item — quantity is ONLY the pending delta
+            const kotItemData = deltaItems.map(({ orderItem, pendingQty }) => ({
+                kotId: newKot.id,
+                orderItemId: orderItem.id,
+                menuItemId: orderItem.menuItemId,
+                quantity: pendingQty,
+                price: orderItem.price,
+                notes: orderItem.notes || null
+            }));
+            await tx.kOTItem.createMany({ data: kotItemData });
+
+            // Update sentQuantity on each affected OrderItem to reflect the new total
+            for (const { orderItem, historicalKOTQuantity, pendingQty } of deltaItems) {
+                const newSent = historicalKOTQuantity + pendingQty;
+                await tx.orderItem.update({
+                    where: { id: orderItem.id },
+                    data: { sentQuantity: newSent }
+                });
+            }
+
+            return { kot: newKot, deltaItems };
         });
-        await createNotification({
 
-            restaurantId: req.user.restaurantId,
-
-            userId: req.user.id,
-
-            title: "KOT Generated",
-
-            message: `KOT ${kot.kotNo} generated.`,
-
-            type: "INFO"
-
+        // Fetch the created KOT with its items for the response
+        const kotWithItems = await prisma.kOT.findFirst({
+            where: { id: kot.kot.id },
+            include: {
+                kotItems: {
+                    include: { menuItem: true }
+                }
+            }
         });
 
         try {
-            emitKotEvent(req.user.restaurantId, "created", kot);
+            await createNotification(prisma, {
+                restaurantId: req.user.restaurantId,
+                userId: req.user.id,
+                title: "KOT Generated",
+                message: `KOT ${kot.kot.kotNo} generated with ${kot.deltaItems.length} item(s).`,
+                type: "INFO"
+            });
+        } catch (notifErr) {
+            console.error("[KOT] Notification creation failed (non-critical):", notifErr.message);
+        }
+
+        try {
+            emitKotEvent(req.user.restaurantId, "created", kotWithItems);
         } catch (sockErr) {}
-        return successResponse(
-            res,
-            kot,
-            "KOT Generated",
-            201
-        );
+
+        return successResponse(res, kotWithItems, "KOT Generated", 201);
 
     } catch (error) {
-
-        return errorResponse(
-            res,
-            error.message
-        );
-
+        // "NO_PENDING_ITEMS" is a normal idempotent state — return 200, not 400.
+        // The browser must never log "POST /api/kot 400" for this case.
+        if (error.isNoPending) {
+            return successResponse(res, { created: false, kot: null, kotItems: [] }, "No new items to send to kitchen.", 200);
+        }
+        return errorResponse(res, error.message);
     }
 
-};
-
-const getKOTList = async (req, res) => {
+};const getKOTList = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
         const kots = await prisma.kOT.findMany({
-            where: {
-                restaurantId: req.user.restaurantId
-            },
+            where: {},
 
             include: {
 
                 order: {
 
                     include: {
-
                         table: true,
-
                         orderItems: {
-
                             include: {
-
                                 menuItem: true
-
                             }
 
                         }
 
                     }
 
+                },
+                // Include KOTItem records so the Kitchen screen shows only
+                // the delta items that belong to THIS specific KOT.
+                kotItems: {
+                    include: {
+                        menuItem: true
+                    }
                 }
 
             },
@@ -162,19 +225,13 @@ const getKOTList = async (req, res) => {
 };
 
 const updateKOTStatus = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
-        const { status } = req.body;
-
-        const existing = await prisma.kOT.findFirst({
-
+        const { status } = req.body;        const existing = await prisma.kOT.findFirst({
             where: {
-
-                id: Number(req.params.id),
-
-                restaurantId: req.user.restaurantId
-
+                id: Number(req.params.id)
             }
 
         });
@@ -227,19 +284,13 @@ const updateKOTStatus = async (req, res) => {
 
 };
 const updateKOT = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
-        const { notes, priority } = req.body;
-
-        const existing = await prisma.kOT.findFirst({
-
+        const { notes, priority } = req.body;        const existing = await prisma.kOT.findFirst({
             where: {
-
-                id: Number(req.params.id),
-
-                restaurantId: req.user.restaurantId
-
+                id: Number(req.params.id)
             }
 
         });
@@ -300,19 +351,13 @@ const updateKOT = async (req, res) => {
 
     }
 
-};
-const reprintKOT = async (req, res) => {
+};const reprintKOT = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
-
         const existing = await prisma.kOT.findFirst({
-
             where: {
-
-                id: Number(req.params.id),
-
-                restaurantId: req.user.restaurantId
-
+                id: Number(req.params.id)
             },
 
             include: {
@@ -320,21 +365,21 @@ const reprintKOT = async (req, res) => {
                 order: {
 
                     include: {
-
                         table: true,
-
                         orderItems: {
-
                             include: {
-
                                 menuItem: true
-
                             }
 
                         }
 
                     }
 
+                },
+                kotItems: {
+                    include: {
+                        menuItem: true
+                    }
                 }
 
             }
@@ -344,57 +389,43 @@ const reprintKOT = async (req, res) => {
         if (!existing) {
 
             return errorResponse(
-
                 res,
-
                 "KOT not found",
-
                 404
-
             );
 
         }
 
         const kot = await prisma.kOT.update({
-
             where: {
-
                 id: existing.id
-
             },
-
             data: {
-
                 printCount: {
-
                     increment: 1
-
                 },
-
                 lastPrintedAt: new Date()
-
             },
 
             include: {
-
                 order: {
 
                     include: {
-
                         table: true,
-
                         orderItems: {
-
                             include: {
-
                                 menuItem: true
-
                             }
 
                         }
 
                     }
 
+                },
+                kotItems: {
+                    include: {
+                        menuItem: true
+                    }
                 }
 
             }
@@ -402,13 +433,9 @@ const reprintKOT = async (req, res) => {
         });
 
         return successResponse(
-
             res,
-
             kot,
-
             "KOT Ready For Reprint"
-
         );
 
     }
@@ -416,30 +443,21 @@ const reprintKOT = async (req, res) => {
     catch (error) {
 
         return errorResponse(
-
             res,
-
             error.message
-
         );
 
     }
 
 };
 const updatePriority = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
-        const { priority } = req.body;
-
-        const existing = await prisma.kOT.findFirst({
-
+        const { priority } = req.body;        const existing = await prisma.kOT.findFirst({
             where: {
-
-                id: Number(req.params.id),
-
-                restaurantId: req.user.restaurantId
-
+                id: Number(req.params.id)
             }
 
         });
@@ -500,6 +518,7 @@ const updatePriority = async (req, res) => {
 
 };
 const getKOTHistory = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -561,52 +580,34 @@ const getKOTHistory = async (req, res) => {
 
             where
 
-        });
-
-        const history = await prisma.kOT.findMany({
-
+        });        const history = await prisma.kOT.findMany({
             where,
-
             include: {
-
                 order: {
-
                     include: {
-
                         table: true,
-
                         orderItems: {
-
                             include: {
-
                                 menuItem: true
-
                             }
-
                         }
-
                     }
-
+                },
+                kotItems: {
+                    include: {
+                        menuItem: true
+                    }
                 }
-
             },
-
             orderBy: {
-
                 createdAt: "desc"
-
             },
-
             skip:
 
                 (Number(page) - 1) *
-
                 Number(limit),
-
             take:
-
                 Number(limit)
-
         });
 
         return successResponse(
@@ -645,6 +646,7 @@ const getKOTHistory = async (req, res) => {
 
 };
 const cancelKOT = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -775,6 +777,7 @@ const cancelKOT = async (req, res) => {
 
 // ─── Cancel KOTs by Order ID ────────────────────────────────────────────────────
 const cancelKOTByOrder = async (req, res) => {
+    const prisma = req.tenantDb;
     try {
         const { orderId } = req.params;
         const { reason } = req.body;
@@ -825,6 +828,7 @@ const cancelKOTByOrder = async (req, res) => {
 
 // ─── Reprint KOT by Order ID (finds latest KOT for the order) ─────────────────
 const reprintKOTByOrder = async (req, res) => {
+    const prisma = req.tenantDb;
     try {
         const { orderId } = req.params;
 
@@ -844,6 +848,9 @@ const reprintKOTByOrder = async (req, res) => {
                             include: { menuItem: true },
                         },
                     },
+                },
+                kotItems: {
+                    include: { menuItem: true }
                 },
             },
         });
@@ -867,6 +874,9 @@ const reprintKOTByOrder = async (req, res) => {
                             include: { menuItem: true },
                         },
                     },
+                },
+                kotItems: {
+                    include: { menuItem: true }
                 },
             },
         });

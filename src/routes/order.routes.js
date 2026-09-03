@@ -183,6 +183,16 @@ router.post(
     mergeOrders
 );
 
+// ── Split Orders ──
+router.post(
+    "/split",
+    protect,
+    authorize("ADMIN", "MANAGER"),
+    requireFeature(["tables", "pos"]),
+    audit("ORDER", "SPLIT", (req) => `Split merge group ${req.body.mergeGroupId}`),
+    require("../controllers/order.controller").splitOrders
+);
+
 // ── Update Order Notes ──
 router.patch(
     "/:id/notes",

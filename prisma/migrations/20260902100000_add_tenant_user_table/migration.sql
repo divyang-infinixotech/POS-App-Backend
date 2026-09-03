@@ -1,0 +1,16 @@
+-- Migration: Add User table to tenant schemas
+-- 
+-- This migration documents the addition of the User table to each restaurant's
+-- tenant schema. The actual DDL is managed by tenantSchema.js and is applied
+-- automatically when new restaurants are created or when the migration script
+-- (scripts/migrate-staff-to-tenants.js) is run.
+--
+-- The public schema's User model is NOT modified. It continues to contain
+-- SUPER_ADMIN and ADMIN users. Operational staff (MANAGER, CASHIER, KITCHEN,
+-- WAITER) are moved to their restaurant's tenant schema.
+--
+-- IMPORTANT: This is a documentation-only migration. The actual table creation
+-- is handled by the tenant schema initialization code.
+
+-- No changes to public schema required.
+-- Tenant User table DDL is in src/utils/tenantSchema.js → TENANT_TABLES_SQL.

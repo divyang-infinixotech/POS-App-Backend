@@ -1,4 +1,4 @@
-const prisma = require("../config/prisma");
+// tenantDb is available as req.tenantDb (attached by auth middleware)
 const { successResponse, errorResponse } = require("../utils/response");
 
 const createTable = async (req, res) => {
@@ -8,10 +8,9 @@ const createTable = async (req, res) => {
     const tableNo = String(rawTableNo);
 
     const exists =
-      await prisma.restaurantTable.findFirst({
+      await req.tenantDb.restaurantTable.findFirst({
 
         where: {
-          restaurantId: req.user.restaurantId,
           tableNo
         }
 
@@ -29,7 +28,7 @@ const createTable = async (req, res) => {
     if (shape !== undefined) updateData.shape = shape;
     if (floorId !== undefined) updateData.floorId = Number(floorId);
 
-    const table = await prisma.restaurantTable.create({ data: updateData });
+    const table = await req.tenantDb.restaurantTable.create({ data: updateData });
 
     res.status(201).json({
       success: true,
@@ -50,18 +49,79 @@ const getTables = async (req, res) => {
     }
 
     const tables =
-      await prisma.restaurantTable.findMany({
-        where: {
-          restaurantId: req.user.restaurantId
-        },
+      await req.tenantDb.restaurantTable.findMany({
+        where: {},
         orderBy: {
           tableNo: "asc"
+        },
+        include: {
+          mergeGroups: {
+            where: { mergeGroup: { status: "ACTIVE" } },
+            include: {
+              mergeGroup: {
+                select: {
+                  id: true,
+                  primaryOrderId: true,
+                  status: true,
+                  tables: {
+                    select: { tableId: true, originalOrderId: true }
+                  }
+                }
+              }
+            }
+          }
         }
       });
 
+    // Resolve table numbers for merge-group enrichment.
+    // Merge state is a persisted DB relationship (MergeGroup + MergeGroupTable)
+    // — it is NEVER derived from an order/table status and must survive refresh.
+    const tableById = new Map(tables.map(t => [t.id, t]));
+
+    const enrichedTables = tables.map(t => {
+      const activeMerge = t.mergeGroups?.[0]?.mergeGroup || null;
+      // Every table always carries the merge fields (null/empty when not merged)
+      // so callers never have to guess whether a missing key means "not merged".
+      const base = {
+        ...t,
+        mergeGroupId: null,
+        isMerged: false,
+        primaryOrderId: null,
+        primaryTableId: null,
+        primaryTableNo: null,
+        isPrimaryTable: false,
+        mergedTableIds: [],
+        mergedTableNos: [],
+      };
+      if (!activeMerge) return base;
+
+      // All tables in the group, sorted by table number for stable display.
+      const members = activeMerge.tables
+        .map(mgt => ({ id: mgt.tableId, no: tableById.get(mgt.tableId)?.tableNo || null }))
+        .filter(m => m.no != null)
+        .sort((a, b) => String(a.no).localeCompare(String(b.no), undefined, { numeric: true }));
+
+      // The primary table is the table whose ORIGINAL order is the group's
+      // primary order (MergeGroupTable.originalOrderId === MergeGroup.primaryOrderId).
+      const primaryLink = activeMerge.tables.find(mgt => mgt.originalOrderId === activeMerge.primaryOrderId);
+      const primaryTableId = primaryLink?.tableId ?? null;
+
+      return {
+        ...base,
+        mergeGroupId: activeMerge.id,
+        isMerged: true,
+        primaryOrderId: activeMerge.primaryOrderId,
+        primaryTableId,
+        primaryTableNo: primaryTableId ? (tableById.get(primaryTableId)?.tableNo || null) : null,
+        isPrimaryTable: primaryTableId === t.id,
+        mergedTableIds: members.map(m => m.id),
+        mergedTableNos: members.map(m => m.no),
+      };
+    });
+
     res.json({
       success: true,
-      tables
+      tables: enrichedTables
     });
 
   } catch (error) {return errorResponse(res, error.message);}
@@ -76,11 +136,10 @@ const updateTableStatus = async (req, res) => {
     const { status } = req.body;
 
     const existingTable =
-      await prisma.restaurantTable.findFirst({
+      await req.tenantDb.restaurantTable.findFirst({
 
         where: {
-          id: Number(id),
-          restaurantId: req.user.restaurantId
+          id: Number(id)
         }
 
       });
@@ -98,7 +157,7 @@ const updateTableStatus = async (req, res) => {
     }
 
     const table =
-      await prisma.restaurantTable.update({
+      await req.tenantDb.restaurantTable.update({
 
         where: {
           id: existingTable.id
@@ -130,7 +189,7 @@ const updateTable = async (req, res) => {
     const tableNo = rawTableNo !== undefined ? String(rawTableNo) : undefined;
 
     const existingTable =
-      await prisma.restaurantTable.findFirst({
+      await req.tenantDb.restaurantTable.findFirst({
         where: {
           id: Number(id),
           restaurantId: req.user.restaurantId
@@ -151,7 +210,7 @@ const updateTable = async (req, res) => {
     if (shape !== undefined) updateData.shape = shape;
     if (floorId !== undefined) updateData.floorId = Number(floorId);
 
-    const table = await prisma.restaurantTable.update({
+    const table = await req.tenantDb.restaurantTable.update({
       where: { id: existingTable.id },
       data: updateData
     });
@@ -167,7 +226,7 @@ const deleteTable = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const existingTable = await prisma.restaurantTable.findFirst({
+    const existingTable = await req.tenantDb.restaurantTable.findFirst({
       where: {
         id: Number(id),
         restaurantId: req.user.restaurantId
@@ -182,10 +241,9 @@ const deleteTable = async (req, res) => {
     }
 
     // Check if table has active orders (scoped to restaurant)
-    const activeOrders = await prisma.order.count({
+    const activeOrders = await req.tenantDb.order.count({
       where: {
         tableId: existingTable.id,
-        restaurantId: req.user.restaurantId,
         isDeleted: false,
         status: { notIn: ["COMPLETED", "CANCELLED"] }
       }
@@ -198,7 +256,7 @@ const deleteTable = async (req, res) => {
       });
     }
 
-    await prisma.restaurantTable.delete({
+    await req.tenantDb.restaurantTable.delete({
       where: { id: existingTable.id }
     });
 

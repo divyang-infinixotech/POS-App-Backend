@@ -1,4 +1,4 @@
-const prisma = require("../config/prisma");
+// tenantDb is available as req.tenantDb (attached by auth middleware)
 const {
   storage,
   buildPublicId,
@@ -56,8 +56,9 @@ const sanitizeImageInput = ({ image, imagePublicId, existingItem, restaurantId }
 };
 
 /** True when another menu item still references the given image. */
-const isImageReferencedElsewhere = async (publicId, excludeItemId) => {
-  const count = await prisma.menuItem.count({
+const isImageReferencedElsewhere = async (db, publicId, excludeItemId) => {
+  if (!db) return false;
+  const count = await db.menuItem.count({
     where: { imagePublicId: publicId, id: { not: Number(excludeItemId) } }
   });
   return count > 0;
@@ -98,13 +99,11 @@ const createMenuItem = async (req, res) => {
       modifierOptions
     } = req.body;
 
-    const category = await prisma.category.findFirst({
+    const category = await req.tenantDb.category.findFirst({
 
       where: {
 
-        id: Number(categoryId),
-
-        restaurantId: req.user.restaurantId
+        id: Number(categoryId)
 
       }
 
@@ -131,7 +130,7 @@ const createMenuItem = async (req, res) => {
       restaurantId: req.user.restaurantId
     });
 
-    const menuItem = await prisma.menuItem.create({
+    const menuItem = await req.tenantDb.menuItem.create({
       data: {
 
         restaurantId: req.user.restaurantId,
@@ -220,15 +219,9 @@ const getMenuItems = async (req, res) => {
         success: true,
         items: []
       });
-    }
+    }    const items = await req.tenantDb.menuItem.findMany({
 
-    const items = await prisma.menuItem.findMany({
-
-      where: {
-
-        restaurantId: req.user.restaurantId
-
-      },
+      where: {},
 
       include: {
 
@@ -253,16 +246,9 @@ const getMenuItems = async (req, res) => {
 };
 
 const getMenuItemById = async (req, res) => {
-  try {
-
-    const item = await prisma.menuItem.findFirst({
-
+  try {    const item = await req.tenantDb.menuItem.findFirst({
       where: {
-
-        id: Number(req.params.id),
-
-        restaurantId: req.user.restaurantId
-
+        id: Number(req.params.id)
       },
 
       include: {
@@ -329,10 +315,9 @@ const updateMenuItem = async (req, res) => {
             modifierOptions
         } = req.body;
 
-        const existingItem = await prisma.menuItem.findFirst({
+        const existingItem = await req.tenantDb.menuItem.findFirst({
             where: {
-                id: Number(id),
-                restaurantId: req.user.restaurantId
+                id: Number(id)
             }
         });
 
@@ -346,10 +331,9 @@ const updateMenuItem = async (req, res) => {
 
         if (categoryId) {
 
-            const category = await prisma.category.findFirst({
+            const category = await req.tenantDb.category.findFirst({
                 where: {
-                    id: Number(categoryId),
-                    restaurantId: req.user.restaurantId
+                    id: Number(categoryId)
                 }
             });
 
@@ -409,7 +393,7 @@ const updateMenuItem = async (req, res) => {
         if (unit !== undefined) updateData.unit = unit;
         if (modifierOptions !== undefined) updateData.modifierOptions = modifierOptions;
 
-        const item = await prisma.menuItem.update({
+        const item = await req.tenantDb.menuItem.update({
             where: {
                 id: existingItem.id
             },
@@ -425,7 +409,7 @@ const updateMenuItem = async (req, res) => {
         const newPublicId = updateData.imagePublicId != null ? updateData.imagePublicId : null;
         if (imageChanged && oldPublicId && oldPublicId !== newPublicId) {
             try {
-                const referencedElsewhere = await isImageReferencedElsewhere(oldPublicId, existingItem.id);
+                const referencedElsewhere = await isImageReferencedElsewhere(req.tenantDb, oldPublicId, existingItem.id);
                 if (!referencedElsewhere) {
                     await storage.remove(oldPublicId);
                 }
@@ -454,10 +438,9 @@ const updateMenuItem = async (req, res) => {
 const deleteMenuItem = async (req, res) => {
   try {
 
-    const existingItem = await prisma.menuItem.findFirst({
+    const existingItem = await req.tenantDb.menuItem.findFirst({
       where: {
-        id: Number(req.params.id),
-        restaurantId: req.user.restaurantId
+        id: Number(req.params.id)
       }
     });
 
@@ -465,7 +448,7 @@ const deleteMenuItem = async (req, res) => {
       return errorResponse(res, "Menu item not found", 404);
     }
 
-    await prisma.menuItem.delete({
+    await req.tenantDb.menuItem.delete({
       where: {
         id: existingItem.id
       }
@@ -474,7 +457,7 @@ const deleteMenuItem = async (req, res) => {
     // No orphaned images: remove the stored file once nothing else references it.
     if (existingItem.imagePublicId) {
       try {
-        const referencedElsewhere = await isImageReferencedElsewhere(existingItem.imagePublicId, existingItem.id);
+        const referencedElsewhere = await isImageReferencedElsewhere(req.tenantDb, existingItem.imagePublicId, existingItem.id);
         if (!referencedElsewhere) {
           await storage.remove(existingItem.imagePublicId);
         }
@@ -496,10 +479,9 @@ const toggleAvailability = async (req, res) => {
     const { id } = req.params;
     const { isAvailable } = req.body;
 
-    const existingItem = await prisma.menuItem.findFirst({
+    const existingItem = await req.tenantDb.menuItem.findFirst({
       where: {
-        id: Number(id),
-        restaurantId: req.user.restaurantId
+        id: Number(id)
       }
     });
 
@@ -507,7 +489,7 @@ const toggleAvailability = async (req, res) => {
       return errorResponse(res, "Menu item not found", 404);
     }
 
-    const item = await prisma.menuItem.update({
+    const item = await req.tenantDb.menuItem.update({
       where: { id: existingItem.id },
       data: { isAvailable: isAvailable !== false }
     });
@@ -524,10 +506,9 @@ const duplicateMenuItem = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const original = await prisma.menuItem.findFirst({
+    const original = await req.tenantDb.menuItem.findFirst({
       where: {
-        id: Number(id),
-        restaurantId: req.user.restaurantId
+        id: Number(id)
       }
     });
 
@@ -535,7 +516,7 @@ const duplicateMenuItem = async (req, res) => {
       return errorResponse(res, "Menu item not found", 404);
     }
 
-    const duplicate = await prisma.menuItem.create({
+    const duplicate = await req.tenantDb.menuItem.create({
       data: {
         restaurantId: req.user.restaurantId,
         name: `${original.name} (Copy)`,
@@ -621,8 +602,8 @@ const deleteMenuItemImage = async (req, res) => {
     }
     // Refuse to delete images still bound to a menu item — bound images are
     // removed through the menu item update flow (image → null).
-    const bound = await prisma.menuItem.count({ where: { imagePublicId } });
-    if (bound > 0) {
+    const referenced = await req.tenantDb.menuItem.count({ where: { imagePublicId } });
+    if (referenced > 0) {
       return errorResponse(res, "This image is attached to a menu item", 400);
     }
     const removed = await storage.remove(imagePublicId);

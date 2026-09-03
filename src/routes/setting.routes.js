@@ -2,7 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-const prisma = require("../config/prisma");
+const { platformPrisma } = require("../config/tenantPrisma");
 const { storage, buildPublicId } = require("../services/storage.service");
 
 const router = express.Router();
@@ -110,7 +110,19 @@ async function saveLogoFile(buffer, restaurantId, ext) {
 // customized to pass a restaurant identifier in the future.
 router.get("/public/branding", async (req, res) => {
   try {
-    const setting = await prisma.restaurantSetting.findFirst({
+    // RestaurantSetting is a tenant model — find first active restaurant
+    // and query its tenant schema.
+    const { getTenantClientByRestaurantId } = require("../config/tenantPrisma");
+    const restaurant = await platformPrisma.restaurant.findFirst({
+      where: { status: "ACTIVE" },
+      select: { id: true },
+      orderBy: { id: 'asc' },
+    });
+    if (!restaurant) {
+      return res.json({ success: true, data: null });
+    }
+    const { client: tenantDb } = await getTenantClientByRestaurantId(restaurant.id);
+    const setting = await tenantDb.restaurantSetting.findFirst({
       select: {
         restaurantName: true,
         logo: true,
@@ -197,16 +209,18 @@ router.post(
         const fileName = await saveLogoFile(req.file.buffer, req.user.restaurantId, ext);
         logoUrl = `/uploads/logos/${fileName}`;
       }
-      const existing = await prisma.restaurantSetting.findUnique({
+      const db = req.tenantDb;
+      if (!db) return res.status(503).json({ success: false, message: "Tenant database not available" });
+      const existing = await db.restaurantSetting.findUnique({
         where: { restaurantId: req.user.restaurantId }
       });
       if (existing) {
-        await prisma.restaurantSetting.update({
+        await db.restaurantSetting.update({
           where: { restaurantId: req.user.restaurantId },
           data: { logo: logoUrl }
         });
       } else {
-        await prisma.restaurantSetting.create({
+        await db.restaurantSetting.create({
           data: {
             restaurantId: req.user.restaurantId,
             restaurantName: "Untitled",
@@ -228,7 +242,9 @@ router.delete(
   authorize("ADMIN"),
   async (req, res) => {
     try {
-      const existing = await prisma.restaurantSetting.findUnique({
+      const db = req.tenantDb;
+      if (!db) return res.status(503).json({ success: false, message: "Tenant database not available" });
+      const existing = await db.restaurantSetting.findUnique({
         where: { restaurantId: req.user.restaurantId }
       });
       if (existing && existing.logo) {
@@ -260,7 +276,7 @@ router.delete(
             fs.unlinkSync(filePath);
           }
         }
-        await prisma.restaurantSetting.update({
+        await db.restaurantSetting.update({
           where: { restaurantId: req.user.restaurantId },
           data: { logo: null }
         });

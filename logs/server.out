@@ -20258,3 +20258,216 @@ prisma:query SELECT "public"."Category"."id", "public"."Category"."name", "publi
 {"level":"error","message":"CORS not allowed","method":"OPTIONS","path":"/api/auth/login","role":null,"stack":"Error: CORS not allowed\n    at origin (C:\\POS System\\restaurant-pos-backend\\src\\app.js:77:29)\n    at C:\\POS System\\restaurant-pos-backend\\node_modules\\cors\\lib\\index.js:219:13\n    at optionsCallback (C:\\POS System\\restaurant-pos-backend\\node_modules\\cors\\lib\\index.js:199:9)\n    at corsMiddleware (C:\\POS System\\restaurant-pos-backend\\node_modules\\cors\\lib\\index.js:204:7)\n    at Layer.handleRequest (C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\lib\\layer.js:152:17)\n    at trimPrefix (C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\index.js:342:13)\n    at C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\index.js:297:9\n    at processParams (C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\index.js:582:12)\n    at next (C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\index.js:291:5)\n    at internalNext (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:531:6)\n    at xXssProtectionMiddleware (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:311:3)\n    at internalNext (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:529:6)\n    at xPoweredByMiddleware (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:304:3)\n    at internalNext (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:529:6)\n    at xPermittedCrossDomainPoliciesMiddleware (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:297:3)\n    at internalNext (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:529:6)","timestamp":"2026-08-11 15:08:38","userId":null}
 {"level":"error","message":"CORS not allowed","method":"OPTIONS","path":"/api/auth/login","role":null,"stack":"Error: CORS not allowed\n    at origin (C:\\POS System\\restaurant-pos-backend\\src\\app.js:77:29)\n    at C:\\POS System\\restaurant-pos-backend\\node_modules\\cors\\lib\\index.js:219:13\n    at optionsCallback (C:\\POS System\\restaurant-pos-backend\\node_modules\\cors\\lib\\index.js:199:9)\n    at corsMiddleware (C:\\POS System\\restaurant-pos-backend\\node_modules\\cors\\lib\\index.js:204:7)\n    at Layer.handleRequest (C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\lib\\layer.js:152:17)\n    at trimPrefix (C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\index.js:342:13)\n    at C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\index.js:297:9\n    at processParams (C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\index.js:582:12)\n    at next (C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\index.js:291:5)\n    at internalNext (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:531:6)\n    at xXssProtectionMiddleware (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:311:3)\n    at internalNext (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:529:6)\n    at xPoweredByMiddleware (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:304:3)\n    at internalNext (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:529:6)\n    at xPermittedCrossDomainPoliciesMiddleware (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:297:3)\n    at internalNext (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:529:6)","timestamp":"2026-08-11 15:11:18","userId":null}
 {"level":"error","message":"CORS not allowed","method":"OPTIONS","path":"/api/auth/login","role":null,"stack":"Error: CORS not allowed\n    at origin (C:\\POS System\\restaurant-pos-backend\\src\\app.js:77:29)\n    at C:\\POS System\\restaurant-pos-backend\\node_modules\\cors\\lib\\index.js:219:13\n    at optionsCallback (C:\\POS System\\restaurant-pos-backend\\node_modules\\cors\\lib\\index.js:199:9)\n    at corsMiddleware (C:\\POS System\\restaurant-pos-backend\\node_modules\\cors\\lib\\index.js:204:7)\n    at Layer.handleRequest (C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\lib\\layer.js:152:17)\n    at trimPrefix (C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\index.js:342:13)\n    at C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\index.js:297:9\n    at processParams (C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\index.js:582:12)\n    at next (C:\\POS System\\restaurant-pos-backend\\node_modules\\router\\index.js:291:5)\n    at internalNext (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:531:6)\n    at xXssProtectionMiddleware (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:311:3)\n    at internalNext (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:529:6)\n    at xPoweredByMiddleware (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:304:3)\n    at internalNext (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:529:6)\n    at xPermittedCrossDomainPoliciesMiddleware (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:297:3)\n    at internalNext (C:\\POS System\\restaurant-pos-backend\\node_modules\\helmet\\index.cjs:529:6)","timestamp":"2026-08-11 15:25:32","userId":null}
+◇ injected env (10) from .env // tip: ⌘ enable debugging { debug: true }
+⚠ Razorpay not configured — subscription checkout returns 503 until RAZORPAY_KEY_ID/KEY_SECRET/WEBHOOK_SECRET are set in .env
+{"level":"info","message":"Server running on port 5001","timestamp":"2026-09-03 14:08:22"}
+✓ Backend ready on port 5001
+✓ Environment: development
+➡ GET /
+⬅ GET / → 200 (4ms)
+➡ GET /api/dashboard
+prisma:info Starting a postgresql pool with 9 connections.
+prisma:info Starting a postgresql pool with 9 connections.
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+{"endpoint":"full","level":"info","message":"Dashboard Request","queryRestaurantId":null,"restaurantId":1,"role":"ADMIN","timestamp":"2026-09-03 14:08:47","userId":31}
+prisma:info Starting a postgresql pool with 9 connections.
+⬅ GET /api/dashboard → 200 (625ms)
+➡ GET /api/dashboard
+prisma:query SELECT 1
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+{"endpoint":"full","level":"info","message":"Dashboard Request","queryRestaurantId":null,"restaurantId":1,"role":"ADMIN","timestamp":"2026-09-03 14:09:17","userId":31}
+⬅ GET /api/dashboard → 200 (108ms)
+➡ GET /api/floors
+➡ GET /api/tables
+prisma:query SELECT 1
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/floors → 200 (26ms)
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/tables → 200 (112ms)
+➡ GET /api/floors
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/floors → 200 (18ms)
+➡ GET /api/auth/profile
+➡ GET /api/settings
+prisma:query SELECT 1
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."restaurantId", "public"."Subscription"."planId", "public"."Subscription"."scheduledPlanId", "public"."Subscription"."plan", "public"."Subscription"."status"::text, "public"."Subscription"."businessMode"::text, "public"."Subscription"."startDate", "public"."Subscription"."expiryDate", "public"."Subscription"."nextRenewalDate", "public"."Subscription"."billingCycle", "public"."Subscription"."maxUsers", "public"."Subscription"."maxTables", "public"."Subscription"."maxFloors", "public"."Subscription"."maxMenuItems", "public"."Subscription"."maxPrinters", "public"."Subscription"."maxBranches", "public"."Subscription"."maxOrdersPerMonth", "public"."Subscription"."storageLimitMB", "public"."Subscription"."features", "public"."Subscription"."amount", "public"."Subscription"."autoRenew", "public"."Subscription"."updatedBy", "public"."Subscription"."cancelledAt", "public"."Subscription"."cancelledReason", "public"."Subscription"."createdAt", "public"."Subscription"."updatedAt" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Plan"."id", "public"."Plan"."code", "public"."Plan"."name" FROM "public"."Plan" WHERE "public"."Plan"."id" IN ($1) OFFSET $2
+⬅ GET /api/auth/profile → 200 (46ms)
+⬅ GET /api/settings → 200 (54ms)
+➡ GET /api/settings/public/branding
+⬅ GET /api/settings/public/branding → 200 (15ms)
+➡ GET /api/settings/public/branding
+➡ GET /api/dashboard
+⬅ GET /api/settings/public/branding → 200 (11ms)
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+{"endpoint":"full","level":"info","message":"Dashboard Request","queryRestaurantId":null,"restaurantId":1,"role":"ADMIN","timestamp":"2026-09-03 14:10:18","userId":31}
+⬅ GET /api/dashboard → 200 (124ms)
+➡ GET /api/floors
+➡ GET /api/tables
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/floors → 200 (21ms)
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/tables → 200 (89ms)
+➡ GET /api/floors
+prisma:query SELECT 1
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/floors → 200 (19ms)
+➡ GET /api/orders/active
+➡ GET /api/orders
+prisma:query SELECT 1
+prisma:query SELECT 1
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/orders/active → 200 (22ms)
+⬅ GET /api/orders → 200 (118ms)
+➡ GET /api/floors
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/floors → 200 (19ms)
+➡ GET /api/orders/active
+➡ GET /api/orders
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/orders/active → 200 (18ms)
+⬅ GET /api/orders → 200 (104ms)
+➡ GET /api/menu
+➡ GET /api/categories
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/categories → 200 (18ms)
+⬅ GET /api/menu → 200 (38ms)
+➡ GET /api/users
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/users → 200 (21ms)
+➡ GET /api/reports/sales
+➡ GET /api/reports/item-sales
+➡ GET /api/reports/category-sales
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/reports/item-sales → 200 (20ms)
+⬅ GET /api/reports/category-sales → 200 (20ms)
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/reports/sales → 200 (97ms)
+➡ GET /api/settings
+⬅ GET /api/settings → 200 (30ms)
+➡ GET /api/health
+⚠ 404 — GET /api/health
+⬅ GET /api/health → 404 (51ms)
+➡ GET /api/health
+⚠ 404 — GET /api/health
+⬅ GET /api/health → 404 (4ms)
+➡ GET /
+⬅ GET / → 200 (3ms)
+➡ POST /api/auth/login
+⬅ POST /api/auth/login → 401 (331ms)
+➡ POST /api/auth/login
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."restaurantId", "public"."Subscription"."planId", "public"."Subscription"."scheduledPlanId", "public"."Subscription"."plan", "public"."Subscription"."status"::text, "public"."Subscription"."businessMode"::text, "public"."Subscription"."startDate", "public"."Subscription"."expiryDate", "public"."Subscription"."nextRenewalDate", "public"."Subscription"."billingCycle", "public"."Subscription"."maxUsers", "public"."Subscription"."maxTables", "public"."Subscription"."maxFloors", "public"."Subscription"."maxMenuItems", "public"."Subscription"."maxPrinters", "public"."Subscription"."maxBranches", "public"."Subscription"."maxOrdersPerMonth", "public"."Subscription"."storageLimitMB", "public"."Subscription"."features", "public"."Subscription"."amount", "public"."Subscription"."autoRenew", "public"."Subscription"."updatedBy", "public"."Subscription"."cancelledAt", "public"."Subscription"."cancelledReason", "public"."Subscription"."createdAt", "public"."Subscription"."updatedAt" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Plan"."id", "public"."Plan"."code", "public"."Plan"."name" FROM "public"."Plan" WHERE "public"."Plan"."id" IN ($1) OFFSET $2
+⬅ POST /api/auth/login → 200 (313ms)
+➡ POST /api/auth/login
+prisma:query SELECT 1
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."restaurantId", "public"."Subscription"."planId", "public"."Subscription"."scheduledPlanId", "public"."Subscription"."plan", "public"."Subscription"."status"::text, "public"."Subscription"."businessMode"::text, "public"."Subscription"."startDate", "public"."Subscription"."expiryDate", "public"."Subscription"."nextRenewalDate", "public"."Subscription"."billingCycle", "public"."Subscription"."maxUsers", "public"."Subscription"."maxTables", "public"."Subscription"."maxFloors", "public"."Subscription"."maxMenuItems", "public"."Subscription"."maxPrinters", "public"."Subscription"."maxBranches", "public"."Subscription"."maxOrdersPerMonth", "public"."Subscription"."storageLimitMB", "public"."Subscription"."features", "public"."Subscription"."amount", "public"."Subscription"."autoRenew", "public"."Subscription"."updatedBy", "public"."Subscription"."cancelledAt", "public"."Subscription"."cancelledReason", "public"."Subscription"."createdAt", "public"."Subscription"."updatedAt" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Plan"."id", "public"."Plan"."code", "public"."Plan"."name" FROM "public"."Plan" WHERE "public"."Plan"."id" IN ($1) OFFSET $2
+⬅ POST /api/auth/login → 200 (167ms)
+➡ GET /api/tables
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/tables → 200 (64ms)
+➡ GET /api/floors
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/floors → 200 (19ms)
+➡ GET /api/orders/active
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/orders/active → 200 (30ms)
+➡ POST /api/auth/login
+prisma:query SELECT 1
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."restaurantId", "public"."Subscription"."planId", "public"."Subscription"."scheduledPlanId", "public"."Subscription"."plan", "public"."Subscription"."status"::text, "public"."Subscription"."businessMode"::text, "public"."Subscription"."startDate", "public"."Subscription"."expiryDate", "public"."Subscription"."nextRenewalDate", "public"."Subscription"."billingCycle", "public"."Subscription"."maxUsers", "public"."Subscription"."maxTables", "public"."Subscription"."maxFloors", "public"."Subscription"."maxMenuItems", "public"."Subscription"."maxPrinters", "public"."Subscription"."maxBranches", "public"."Subscription"."maxOrdersPerMonth", "public"."Subscription"."storageLimitMB", "public"."Subscription"."features", "public"."Subscription"."amount", "public"."Subscription"."autoRenew", "public"."Subscription"."updatedBy", "public"."Subscription"."cancelledAt", "public"."Subscription"."cancelledReason", "public"."Subscription"."createdAt", "public"."Subscription"."updatedAt" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Plan"."id", "public"."Plan"."code", "public"."Plan"."name" FROM "public"."Plan" WHERE "public"."Plan"."id" IN ($1) OFFSET $2
+⬅ POST /api/auth/login → 200 (95ms)
+➡ POST /api/auth/login
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."restaurantId", "public"."Subscription"."planId", "public"."Subscription"."scheduledPlanId", "public"."Subscription"."plan", "public"."Subscription"."status"::text, "public"."Subscription"."businessMode"::text, "public"."Subscription"."startDate", "public"."Subscription"."expiryDate", "public"."Subscription"."nextRenewalDate", "public"."Subscription"."billingCycle", "public"."Subscription"."maxUsers", "public"."Subscription"."maxTables", "public"."Subscription"."maxFloors", "public"."Subscription"."maxMenuItems", "public"."Subscription"."maxPrinters", "public"."Subscription"."maxBranches", "public"."Subscription"."maxOrdersPerMonth", "public"."Subscription"."storageLimitMB", "public"."Subscription"."features", "public"."Subscription"."amount", "public"."Subscription"."autoRenew", "public"."Subscription"."updatedBy", "public"."Subscription"."cancelledAt", "public"."Subscription"."cancelledReason", "public"."Subscription"."createdAt", "public"."Subscription"."updatedAt" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Plan"."id", "public"."Plan"."code", "public"."Plan"."name" FROM "public"."Plan" WHERE "public"."Plan"."id" IN ($1) OFFSET $2
+⬅ POST /api/auth/login → 200 (93ms)
+➡ GET /api/settings/public/branding
+⬅ GET /api/settings/public/branding → 200 (19ms)
+➡ GET /api/settings/public/branding
+⬅ GET /api/settings/public/branding → 200 (10ms)
+➡ GET /api/settings/public/branding
+⬅ GET /api/settings/public/branding → 200 (118ms)
+➡ GET /api/settings/public/branding
+⬅ GET /api/settings/public/branding → 200 (7ms)
+➡ POST /api/auth/login
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."restaurantId", "public"."Subscription"."planId", "public"."Subscription"."scheduledPlanId", "public"."Subscription"."plan", "public"."Subscription"."status"::text, "public"."Subscription"."businessMode"::text, "public"."Subscription"."startDate", "public"."Subscription"."expiryDate", "public"."Subscription"."nextRenewalDate", "public"."Subscription"."billingCycle", "public"."Subscription"."maxUsers", "public"."Subscription"."maxTables", "public"."Subscription"."maxFloors", "public"."Subscription"."maxMenuItems", "public"."Subscription"."maxPrinters", "public"."Subscription"."maxBranches", "public"."Subscription"."maxOrdersPerMonth", "public"."Subscription"."storageLimitMB", "public"."Subscription"."features", "public"."Subscription"."amount", "public"."Subscription"."autoRenew", "public"."Subscription"."updatedBy", "public"."Subscription"."cancelledAt", "public"."Subscription"."cancelledReason", "public"."Subscription"."createdAt", "public"."Subscription"."updatedAt" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Plan"."id", "public"."Plan"."code", "public"."Plan"."name" FROM "public"."Plan" WHERE "public"."Plan"."id" IN ($1) OFFSET $2
+⬅ POST /api/auth/login → 200 (461ms)
+➡ GET /api/settings/public/branding
+⬅ GET /api/settings/public/branding → 200 (29ms)
+➡ GET /api/settings/public/branding
+⬅ GET /api/settings/public/branding → 200 (12ms)
+➡ GET /api/auth/profile
+➡ GET /api/settings
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."restaurantId", "public"."Subscription"."planId", "public"."Subscription"."scheduledPlanId", "public"."Subscription"."plan", "public"."Subscription"."status"::text, "public"."Subscription"."businessMode"::text, "public"."Subscription"."startDate", "public"."Subscription"."expiryDate", "public"."Subscription"."nextRenewalDate", "public"."Subscription"."billingCycle", "public"."Subscription"."maxUsers", "public"."Subscription"."maxTables", "public"."Subscription"."maxFloors", "public"."Subscription"."maxMenuItems", "public"."Subscription"."maxPrinters", "public"."Subscription"."maxBranches", "public"."Subscription"."maxOrdersPerMonth", "public"."Subscription"."storageLimitMB", "public"."Subscription"."features", "public"."Subscription"."amount", "public"."Subscription"."autoRenew", "public"."Subscription"."updatedBy", "public"."Subscription"."cancelledAt", "public"."Subscription"."cancelledReason", "public"."Subscription"."createdAt", "public"."Subscription"."updatedAt" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Plan"."id", "public"."Plan"."code", "public"."Plan"."name" FROM "public"."Plan" WHERE "public"."Plan"."id" IN ($1) OFFSET $2
+⬅ GET /api/auth/profile → 200 (55ms)
+➡ GET /api/settings/public/branding
+⬅ GET /api/settings/public/branding → 200 (9ms)
+➡ GET /api/settings/public/branding
+⬅ GET /api/settings/public/branding → 200 (11ms)
+➡ GET /api/dashboard
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+{"endpoint":"full","level":"info","message":"Dashboard Request","queryRestaurantId":null,"restaurantId":1,"role":"ADMIN","timestamp":"2026-09-03 14:56:51","userId":31}
+⬅ GET /api/settings → 200 (306ms)
+⬅ GET /api/dashboard → 200 (469ms)
+➡ POST /api/auth/login
+prisma:query SELECT 1
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."restaurantId", "public"."Subscription"."planId", "public"."Subscription"."scheduledPlanId", "public"."Subscription"."plan", "public"."Subscription"."status"::text, "public"."Subscription"."businessMode"::text, "public"."Subscription"."startDate", "public"."Subscription"."expiryDate", "public"."Subscription"."nextRenewalDate", "public"."Subscription"."billingCycle", "public"."Subscription"."maxUsers", "public"."Subscription"."maxTables", "public"."Subscription"."maxFloors", "public"."Subscription"."maxMenuItems", "public"."Subscription"."maxPrinters", "public"."Subscription"."maxBranches", "public"."Subscription"."maxOrdersPerMonth", "public"."Subscription"."storageLimitMB", "public"."Subscription"."features", "public"."Subscription"."amount", "public"."Subscription"."autoRenew", "public"."Subscription"."updatedBy", "public"."Subscription"."cancelledAt", "public"."Subscription"."cancelledReason", "public"."Subscription"."createdAt", "public"."Subscription"."updatedAt" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Plan"."id", "public"."Plan"."code", "public"."Plan"."name" FROM "public"."Plan" WHERE "public"."Plan"."id" IN ($1) OFFSET $2
+⬅ POST /api/auth/login → 200 (111ms)
+➡ GET /api/auth/profile
+➡ GET /api/settings
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."restaurantId", "public"."Subscription"."planId", "public"."Subscription"."scheduledPlanId", "public"."Subscription"."plan", "public"."Subscription"."status"::text, "public"."Subscription"."businessMode"::text, "public"."Subscription"."startDate", "public"."Subscription"."expiryDate", "public"."Subscription"."nextRenewalDate", "public"."Subscription"."billingCycle", "public"."Subscription"."maxUsers", "public"."Subscription"."maxTables", "public"."Subscription"."maxFloors", "public"."Subscription"."maxMenuItems", "public"."Subscription"."maxPrinters", "public"."Subscription"."maxBranches", "public"."Subscription"."maxOrdersPerMonth", "public"."Subscription"."storageLimitMB", "public"."Subscription"."features", "public"."Subscription"."amount", "public"."Subscription"."autoRenew", "public"."Subscription"."updatedBy", "public"."Subscription"."cancelledAt", "public"."Subscription"."cancelledReason", "public"."Subscription"."createdAt", "public"."Subscription"."updatedAt" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/settings → 200 (35ms)
+prisma:query SELECT "public"."Plan"."id", "public"."Plan"."code", "public"."Plan"."name" FROM "public"."Plan" WHERE "public"."Plan"."id" IN ($1) OFFSET $2
+⬅ GET /api/auth/profile → 200 (41ms)
+➡ GET /api/settings/public/branding
+⬅ GET /api/settings/public/branding → 200 (13ms)
+➡ GET /api/settings/public/branding
+⬅ GET /api/settings/public/branding → 200 (10ms)
+➡ GET /api/settings
+➡ GET /api/auth/profile
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."restaurantId", "public"."Subscription"."planId", "public"."Subscription"."scheduledPlanId", "public"."Subscription"."plan", "public"."Subscription"."status"::text, "public"."Subscription"."businessMode"::text, "public"."Subscription"."startDate", "public"."Subscription"."expiryDate", "public"."Subscription"."nextRenewalDate", "public"."Subscription"."billingCycle", "public"."Subscription"."maxUsers", "public"."Subscription"."maxTables", "public"."Subscription"."maxFloors", "public"."Subscription"."maxMenuItems", "public"."Subscription"."maxPrinters", "public"."Subscription"."maxBranches", "public"."Subscription"."maxOrdersPerMonth", "public"."Subscription"."storageLimitMB", "public"."Subscription"."features", "public"."Subscription"."amount", "public"."Subscription"."autoRenew", "public"."Subscription"."updatedBy", "public"."Subscription"."cancelledAt", "public"."Subscription"."cancelledReason", "public"."Subscription"."createdAt", "public"."Subscription"."updatedAt" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Plan"."id", "public"."Plan"."code", "public"."Plan"."name" FROM "public"."Plan" WHERE "public"."Plan"."id" IN ($1) OFFSET $2
+⬅ GET /api/auth/profile → 200 (38ms)
+⬅ GET /api/settings → 200 (59ms)
+➡ GET /api/settings/public/branding
+➡ GET /api/dashboard
+➡ GET /api/settings/public/branding
+⬅ GET /api/settings/public/branding → 200 (15ms)
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+{"endpoint":"full","level":"info","message":"Dashboard Request","queryRestaurantId":null,"restaurantId":1,"role":"ADMIN","timestamp":"2026-09-03 14:57:08","userId":31}
+⬅ GET /api/dashboard → 200 (168ms)
+⬅ GET /api/settings/public/branding → 200 (311ms)
+➡ GET /api/floors
+➡ GET /api/tables
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/tables → 200 (34ms)
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/floors → 200 (88ms)
+➡ GET /api/tables
+➡ GET /api/floors
+➡ GET /api/orders/active
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/tables → 200 (16ms)
+⬅ GET /api/orders/active → 200 (15ms)
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/floors → 200 (94ms)
+➡ GET /api/orders/active
+➡ GET /api/tables
+➡ GET /api/floors
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+prisma:query SELECT "public"."Subscription"."id", "public"."Subscription"."features", "public"."Subscription"."status"::text, "public"."Subscription"."expiryDate" FROM "public"."Subscription" WHERE ("public"."Subscription"."restaurantId" = $1 AND 1=1) LIMIT $2 OFFSET $3
+⬅ GET /api/orders/active → 200 (22ms)
+⬅ GET /api/floors → 200 (18ms)
+⬅ GET /api/tables → 200 (23ms)
+➡ GET /
+⬅ GET / → 200 (1ms)

@@ -1,4 +1,4 @@
-const prisma = require("../config/prisma");
+const { platformPrisma } = require("../config/tenantPrisma");
 const { successResponse, errorResponse } = require("../utils/response");
 const {
     generateOrderNumber
@@ -22,6 +22,7 @@ const {
 } = require("../services/inventory.service");
 
 const createOrder = async (req, res) => {
+    const prisma = req.tenantDb;
     try {
 
         const {
@@ -46,11 +47,7 @@ const createOrder = async (req, res) => {
             const table = await prisma.restaurantTable.findFirst({
 
                 where: {
-
-                    id: Number(tableId),
-
-                    restaurantId: req.user.restaurantId
-
+                    id: Number(tableId)
                 }
 
             });
@@ -94,8 +91,7 @@ const createOrder = async (req, res) => {
 
                 const menuItem = await tx.menuItem.findFirst({
                     where: {
-                        id: Number(item.menuItemId),
-                        restaurantId: req.user.restaurantId
+                        id: Number(item.menuItemId)
                     }
                 });
 
@@ -126,6 +122,10 @@ const createOrder = async (req, res) => {
                 orderItems.push({
                     menuItemId: menuItem.id,
                     quantity: item.quantity,
+                    // Start at 0 — the auto-KOT records what was sent via KOTItems.
+                    // The createKOT controller (and the auto-KOT path below) uses
+                    // KOTItem history, not this field, to determine the delta.
+                    sentQuantity: 0,
                     price: menuItem.price,
                     tax: lineTax,
                     total: lineTotal,
@@ -166,9 +166,7 @@ const createOrder = async (req, res) => {
                 const walkInCustomer = await tx.customer.findFirst({
 
                     where: {
-                        restaurantId: req.user.restaurantId,
                         type: "WALK_IN"
-
                     }
 
                 });
@@ -192,7 +190,7 @@ const createOrder = async (req, res) => {
 
                 data: {
                     restaurantId: req.user.restaurantId,
-                    orderNo: await generateOrderNumber(),
+                    orderNo: await generateOrderNumber(tx),
 
                     orderType,
 
@@ -226,20 +224,9 @@ const createOrder = async (req, res) => {
                 data: { status: "OCCUPIED" }
               });
             }
-            await createNotification({
-
-                restaurantId: req.user.restaurantId,
-
-                userId: req.user.id,
-
-                title: "New Order",
-
-                message: `Order ${createdOrder.orderNo} created successfully.`,
-
-                type: "INFO"
-
-            });
-
+            // NOTE: Notification creation moved OUTSIDE the transaction.
+            // If notification fails inside a $transaction, PostgreSQL aborts
+            // the entire transaction, causing 25P02 for subsequent operations.
 
             for (const item of orderItems) {
                 await tx.orderItem.create({
@@ -262,23 +249,10 @@ const createOrder = async (req, res) => {
                 req.user.id
             );
 
-            // ── Auto-create KOT for kitchen-based orders (skip for COUNTER_SALE) ──
-            if (orderType !== "COUNTER_SALE" && (orderType === "DINE_IN" || orderType === "TAKEAWAY")) {
-                try {
-                    await tx.kOT.create({
-                        data: {
-                            restaurantId: req.user.restaurantId,
-                            kotNo: await generateKOTNumber(),
-                            orderId: createdOrder.id,
-                            status: "PENDING",
-                            notes: notes || null
-                        }
-                    });
-                } catch (kotErr) {
-                    console.error("KOT creation error:", kotErr.message);
-                    // Don't fail the order if KOT creation fails
-                }
-            }
+            // NOTE: KOT creation moved OUTSIDE the transaction.
+            // If KOT creation fails inside a $transaction (e.g. unique constraint
+            // on kotNo), PostgreSQL aborts the entire transaction, causing 25P02
+            // for the final order.findUnique() query.
 
             return await tx.order.findUnique({
                 where: {
@@ -304,11 +278,71 @@ const createOrder = async (req, res) => {
 
         });
 
+        // ── Auto-create KOT (non-critical, OUTSIDE transaction) ──
+        // This ensures the order response includes the KOT so the frontend
+        // doesn't need a second /api/kot call (which would 400).
+        let autoKot = null;
+        if (orderType !== "COUNTER_SALE" && (orderType === "DINE_IN" || orderType === "TAKEAWAY")) {
+            try {
+                autoKot = await prisma.kOT.create({
+                    data: {
+                        restaurantId: req.user.restaurantId,
+                        kotNo: await generateKOTNumber(prisma),
+                        orderId: order.id,
+                        status: "PENDING",
+                        notes: notes || null
+                    }
+                });
+                // Record each initial order item in the KOT via KOTItem junction
+                const initialItems = order.orderItems || [];
+                if (initialItems.length > 0) {
+                    await prisma.kOTItem.createMany({
+                        data: initialItems.map(oi => ({
+                            kotId: autoKot.id,
+                            orderItemId: oi.id,
+                            menuItemId: oi.menuItemId,
+                            quantity: oi.quantity,
+                            price: oi.price,
+                            notes: oi.notes || null
+                        }))
+                    });
+                    // Update sentQuantity to match what was just sent via this KOT
+                    for (const oi of initialItems) {
+                        await prisma.orderItem.update({
+                            where: { id: oi.id },
+                            data: { sentQuantity: oi.quantity }
+                        });
+                    }
+                }
+            } catch (kotErr) {
+                console.error("[Order] KOT creation failed (non-critical):", kotErr.message);
+            }
+        }
+
+        // Attach the auto-KOT to the order response so the frontend can use it
+        // without making a second /api/kot call.
+        if (autoKot) {
+            order.kot = [{ id: autoKot.id, kotNo: autoKot.kotNo, status: autoKot.status }];
+        }
+
+        // ── Notification (non-critical, OUTSIDE transaction) ──
+        try {
+            await createNotification(prisma, {
+                restaurantId: req.user.restaurantId,
+                userId: req.user.id,
+                title: "New Order",
+                message: `Order ${order.orderNo} created successfully.`,
+                type: "INFO"
+            });
+        } catch (notifErr) {
+            console.error("[Order] Notification creation failed (non-critical):", notifErr.message);
+        }
+
         // ── Emit real-time event ──
         try {
             emitOrderEvent(req.user.restaurantId, "created", order);
         } catch (sockErr) {
-            console.error("Socket emit error:", sockErr.message);
+            // Non-critical: don't fail the response if socket emit fails
         }
 
         return successResponse(
@@ -332,6 +366,7 @@ const createOrder = async (req, res) => {
 };
 
 const getOrders = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -347,7 +382,6 @@ const getOrders = async (req, res) => {
             await prisma.order.findMany({
 
                 where: {
-                    restaurantId: req.user.restaurantId,
                     isDeleted: false
                 },
 
@@ -396,6 +430,7 @@ const getOrders = async (req, res) => {
 
 /// Get only active (non-completed, non-cancelled) orders for Active Orders screen
 const getActiveOrders = async (req, res) => {
+    const prisma = req.tenantDb;
     try {
         if (!req.user.restaurantId) {
             return successResponse(res, [], "Active orders fetched");
@@ -403,7 +438,6 @@ const getActiveOrders = async (req, res) => {
 
         const orders = await prisma.order.findMany({
             where: {
-                restaurantId: req.user.restaurantId,
                 isDeleted: false,
                 status: {
                     notIn: ["COMPLETED", "CANCELLED"]
@@ -434,7 +468,37 @@ const getActiveOrders = async (req, res) => {
             }
         });
 
-        return successResponse(res, orders, "Active orders fetched successfully");
+        
+        // Enrich orders with merge group info
+        const enrichedOrders = [];
+        for (const order of orders) {
+            const mergeGroup = await prisma.mergeGroup.findFirst({
+                where: { primaryOrderId: order.id, status: "ACTIVE" },
+                include: { tables: { include: { table: true } } }
+            });
+            if (mergeGroup) {
+                enrichedOrders.push({
+                    ...order,
+                    isMerged: true,
+                    mergeGroupId: mergeGroup.id,
+                    mergedTableIds: mergeGroup.tables.map(t => t.tableId),
+                    mergedTables: mergeGroup.tables.map(t => ({
+                        tableId: t.tableId,
+                        tableNo: t.table?.tableNo,
+                        originalOrderId: t.originalOrderId
+                    }))
+                });
+            } else {
+                enrichedOrders.push({
+                    ...order,
+                    isMerged: false,
+                    mergeGroupId: null,
+                    mergedTableIds: [],
+                    mergedTables: []
+                });
+            }
+        }
+        return successResponse(res, enrichedOrders, "Active orders fetched successfully");
 
     } catch (error) {
         return errorResponse(res, error.message);
@@ -442,16 +506,19 @@ const getActiveOrders = async (req, res) => {
 };
 
 const getOrderById = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
+        const id = Number(req.params.id);
+        if (!Number.isSafeInteger(id) || id <= 0) {
+            return errorResponse(res, "Invalid order ID", 400);
+        }
 
         const order =
             await prisma.order.findFirst({
 
                 where: {
-
-                    id: Number(req.params.id),
-                    restaurantId: req.user.restaurantId,
+                    id,
                     isDeleted: false
 
                 },
@@ -510,6 +577,7 @@ const getOrderById = async (req, res) => {
 };
 
 const updateOrderStatus = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -517,8 +585,7 @@ const updateOrderStatus = async (req, res) => {
 
         const order = await prisma.order.findFirst({
             where: {
-                id: Number(req.params.id),
-                restaurantId: req.user.restaurantId
+                id: Number(req.params.id)
             },
             include: { orderItems: true }
         });
@@ -573,6 +640,7 @@ const updateOrderStatus = async (req, res) => {
 
 };
 const cancelOrder = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -582,8 +650,7 @@ const cancelOrder = async (req, res) => {
 
             where: {
 
-                id: Number(req.params.id),
-                restaurantId: req.user.restaurantId
+                id: Number(req.params.id)
 
             },
             include: { orderItems: true }
@@ -687,6 +754,16 @@ const cancelOrder = async (req, res) => {
             emitOrderEvent(req.user.restaurantId, "cancelled", order);
         } catch (sockErr) {}
 
+        // Release merged tables if this order is part of a merge group
+        try {
+            const mergeGroup = await prisma.mergeGroup.findFirst({
+                where: { primaryOrderId: existingOrder.id, status: "ACTIVE" }
+            });
+            if (mergeGroup) await releaseMergeGroup(prisma, mergeGroup.id);
+        } catch (mergeErr) {
+            console.error("[Order] Merge release on cancel failed (non-critical):", mergeErr.message);
+        }
+
         return successResponse(
 
             res,
@@ -713,14 +790,14 @@ const cancelOrder = async (req, res) => {
 
 };
 const holdOrder = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
         const order = await prisma.order.findFirst({
 
             where: {
-                id: Number(req.params.id),
-                restaurantId: req.user.restaurantId
+                id: Number(req.params.id)
             }
 
         });
@@ -811,6 +888,7 @@ const holdOrder = async (req, res) => {
 
 };
 const resumeOrder = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -818,8 +896,7 @@ const resumeOrder = async (req, res) => {
 
             where: {
 
-                id: Number(req.params.id),
-                restaurantId: req.user.restaurantId
+                id: Number(req.params.id)
 
             }
 
@@ -901,6 +978,7 @@ const resumeOrder = async (req, res) => {
 };
 
 const changeTable = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -910,8 +988,7 @@ const changeTable = async (req, res) => {
 
             where: {
 
-                id: Number(req.params.id),
-                restaurantId: req.user.restaurantId
+                id: Number(req.params.id)
 
             }
 
@@ -1083,6 +1160,7 @@ const changeTable = async (req, res) => {
 
 };
 const updateOrder = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -1103,8 +1181,7 @@ const updateOrder = async (req, res) => {
 
             where: {
 
-                id: Number(req.params.id),
-                restaurantId: req.user.restaurantId
+                id: Number(req.params.id)
 
 
             },
@@ -1140,12 +1217,20 @@ const updateOrder = async (req, res) => {
 
             );
 
-        }
-
-        // Snapshot current reserved quantities so we can reconcile the stock delta
+        }        // Snapshot current reserved quantities so we can reconcile the stock delta
         const oldQtyByItem = {};
         for (const oi of order.orderItems) {
             oldQtyByItem[oi.menuItemId] = (oldQtyByItem[oi.menuItemId] || 0) + oi.quantity;
+        }
+
+        // Snapshot sentQuantity per menuItemId so we can preserve it across item recreation.
+        // Key insight: when the same product appears in multiple OrderItem rows we sum
+        // the sent quantities and then distribute proportionally when recreating.
+        const sentQtyByItem = {};
+        for (const oi of order.orderItems) {
+            // NULL sentQuantity means legacy/untracked → treat as fully sent
+            const sent = oi.sentQuantity != null ? oi.sentQuantity : oi.quantity;
+            sentQtyByItem[oi.menuItemId] = (sentQtyByItem[oi.menuItemId] || 0) + sent;
         }
 
         let subtotal = 0;
@@ -1157,12 +1242,9 @@ const updateOrder = async (req, res) => {
         for (const item of items) {
 
             const menuItem = await prisma.menuItem.findFirst({
-
                 where: {
-
                     id: Number(item.menuItemId),
                     restaurantId: req.user.restaurantId
-
                 }
 
             });
@@ -1188,19 +1270,19 @@ const updateOrder = async (req, res) => {
                 (lineSubtotal * menuItem.tax) / 100;
 
             subtotal += lineSubtotal;
-
             taxAmount += lineTax;
+
+            // Preserve sentQuantity: cap at the new quantity so it never exceeds.
+            const prevSent = sentQtyByItem[menuItem.id] || 0;
+            const cappedSent = Math.min(prevSent, item.quantity);
 
             orderItems.push({
 
                 menuItemId: menuItem.id,
-
                 quantity: item.quantity,
-
+                sentQuantity: cappedSent,
                 price: menuItem.price,
-
                 tax: lineTax,
-
                 total: lineSubtotal + lineTax,
 
                 notes: item.notes || null
@@ -1267,29 +1349,68 @@ const updateOrder = async (req, res) => {
 
                 }
 
+            });            // ── Update OrderItems IN PLACE to preserve KOTItem references ──
+            // Previous approach deleted all items and recreated them, which cascade-
+            // deleted KOTItem records from existing KOTs, breaking kitchen history.
+            // Instead: update matching existing items, create new ones, delete removed.
+
+            const existingItems = await tx.orderItem.findMany({
+                where: { orderId: order.id },
+                orderBy: { id: "asc" }
             });
 
-            await tx.orderItem.deleteMany({
+            // Group existing items by (menuItemId, notes) for matching
+            const existingByGroup = {};
+            for (const ei of existingItems) {
+                const key = `${ei.menuItemId}|${ei.notes || ''}`;
+                if (!existingByGroup[key]) existingByGroup[key] = [];
+                existingByGroup[key].push(ei);
+            }
 
-                where: {
+            const matchedExistingIds = new Set();
+            const newItemsToCreate = [];
 
-                    orderId: order.id
-
+            for (const item of orderItems) {
+                const key = `${item.menuItemId}|${item.notes || ''}`;
+                const group = existingByGroup[key];
+                if (group && group.length > 0) {
+                    // Update existing item in place (preserves ID and KOTItem references)
+                    const existing = group.shift();
+                    matchedExistingIds.add(existing.id);
+                    await tx.orderItem.update({
+                        where: { id: existing.id },
+                        data: {
+                            quantity: item.quantity,
+                            sentQuantity: item.sentQuantity,
+                            price: item.price,
+                            tax: item.tax,
+                            total: item.total,
+                            notes: item.notes
+                        }
+                    });
+                } else {
+                    // New item — create it
+                    newItemsToCreate.push({
+                        ...item,
+                        orderId: order.id
+                    });
                 }
+            }
 
-            });
+            // Create new items
+            if (newItemsToCreate.length > 0) {
+                await tx.orderItem.createMany({ data: newItemsToCreate });
+            }
 
-            await tx.orderItem.createMany({
-
-                data: orderItems.map(i => ({
-
-                    ...i,
-
-                    orderId: order.id
-
-                }))
-
-            });
+            // Delete removed items (not in new list)
+            const removedItemIds = existingItems
+                .filter(ei => !matchedExistingIds.has(ei.id))
+                .map(ei => ei.id);
+            if (removedItemIds.length > 0) {
+                await tx.orderItem.deleteMany({
+                    where: { id: { in: removedItemIds } }
+                });
+            }
 
             // Reconcile stock: compare old vs new quantities per item.
             // Positive delta = restore, negative delta = deduct more.
@@ -1368,6 +1489,7 @@ const updateOrder = async (req, res) => {
 
 };
 const addOrderItem = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -1481,30 +1603,20 @@ const addOrderItem = async (req, res) => {
 
         const total =
 
-            subtotal + tax;
-
-        const orderItem = await prisma.$transaction(async (tx) => {
+            subtotal + tax;        const orderItem = await prisma.$transaction(async (tx) => {
 
             const created = await tx.orderItem.create({
-
                 data: {
-
                     orderId,
-
                     menuItemId,
-
                     quantity,
-
+                    // New items are NOT yet sent to kitchen — sentQuantity starts at 0.
+                    sentQuantity: 0,
                     price: menuItem.price,
-
                     tax,
-
                     total,
-
                     notes
-
                 }
-
             });
 
             // Deduct stock ONLY for the newly added quantity (type ORDER_UPDATED)
@@ -1520,7 +1632,7 @@ const addOrderItem = async (req, res) => {
 
         });
 
-        await recalculateOrder(req.user.restaurantId, orderId);
+        await recalculateOrder(req.user.restaurantId, orderId, req.tenantDb);
 
         const updatedOrder = await prisma.order.findFirst({
 
@@ -1577,6 +1689,7 @@ const addOrderItem = async (req, res) => {
 
 };
 const updateOrderItem = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -1673,30 +1786,23 @@ const updateOrderItem = async (req, res) => {
 
         const total =
 
-            subtotal + tax;
+            subtotal + tax;        // Cap sentQuantity so it never exceeds the new quantity
+        const prevSent = orderItem.sentQuantity != null ? orderItem.sentQuantity : orderItem.quantity;
+        const cappedSent = Math.min(prevSent, Number(quantity));
 
         await prisma.$transaction(async (tx) => {
 
             await tx.orderItem.update({
-
                 where: {
-
                     id: itemId
-
                 },
-
                 data: {
-
                     quantity,
-
+                    sentQuantity: cappedSent,
                     tax,
-
                     total,
-
                     notes
-
                 }
-
             });
 
             // Adjust reserved stock by the quantity delta (ORDER_UPDATED)
@@ -1713,7 +1819,7 @@ const updateOrderItem = async (req, res) => {
 
         });
 
-        await recalculateOrder(req.user.restaurantId, orderId);
+        await recalculateOrder(req.user.restaurantId, orderId, req.tenantDb);
 
         const updatedOrder = await prisma.order.findFirst({
 
@@ -1770,6 +1876,7 @@ const updateOrderItem = async (req, res) => {
 
 };
 const deleteOrderItem = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -1895,7 +2002,7 @@ const deleteOrderItem = async (req, res) => {
 
         });
 
-        await recalculateOrder(req.user.restaurantId, orderId);
+        await recalculateOrder(req.user.restaurantId, orderId, req.tenantDb);
 
         const updatedOrder = await prisma.order.findFirst({
 
@@ -1952,6 +2059,7 @@ const deleteOrderItem = async (req, res) => {
 
 };
 const updateDiscount = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -1967,8 +2075,7 @@ const updateDiscount = async (req, res) => {
 
             where: {
 
-                id: Number(req.params.id),
-                restaurantId: req.user.restaurantId
+                id: Number(req.params.id)
 
             }
 
@@ -2103,11 +2210,11 @@ const updateDiscount = async (req, res) => {
 
 };
 const deleteOrder = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {        const order = await prisma.order.findFirst({
             where: {
-                id: Number(req.params.id),
-                restaurantId: req.user.restaurantId
+                id: Number(req.params.id)
             },
             include: { orderItems: true }
         });
@@ -2166,152 +2273,98 @@ const deleteOrder = async (req, res) => {
 
 };
 
-// ── Merge Orders ──
+// ── Helper: Release all tables in a merge group ──
+async function releaseMergeGroup(prisma, mergeGroupId) {
+    const mergeGroup = await prisma.mergeGroup.findUnique({ where: { id: mergeGroupId }, include: { tables: true } });
+    if (!mergeGroup) return;
+    for (const mgt of mergeGroup.tables) {
+        try { await prisma.restaurantTable.update({ where: { id: mgt.tableId }, data: { status: "AVAILABLE" } }); }
+        catch (e) { console.error(`[Merge] Failed to release table ${mgt.tableId}:`, e.message); }
+    }
+    await prisma.mergeGroup.update({ where: { id: mergeGroupId }, data: { status: "COMPLETED" } });
+}
+
+// ── Merge Orders (DB-persisted) ──
 const mergeOrders = async (req, res) => {
     try {
         const sourceOrderId = Number(req.params.id);
         const { targetOrderId } = req.body;
-
-        if (!targetOrderId) {
-            return errorResponse(res, "Target order ID is required", 400);
-        }
-
-        const sourceOrder = await prisma.order.findFirst({
-            where: { id: sourceOrderId, restaurantId: req.user.restaurantId },
-            include: { orderItems: true, bill: true }
-        });
-
-        if (!sourceOrder) {
-            return errorResponse(res, "Source order not found", 404);
-        }
-
-        if (sourceOrder.bill) {
-            return errorResponse(res, "Cannot merge order after bill generation", 400);
-        }
-
-        const targetOrder = await prisma.order.findFirst({
-            where: { id: Number(targetOrderId), restaurantId: req.user.restaurantId },
-            include: { bill: true }
-        });
-
-        if (!targetOrder) {
-            return errorResponse(res, "Target order not found", 404);
-        }
-
-        if (targetOrder.bill) {
-            return errorResponse(res, "Cannot merge into order with existing bill", 400);
-        }
-
-        if (sourceOrder.status === "COMPLETED" || sourceOrder.status === "CANCELLED") {
-            return errorResponse(res, "Source order is already completed or cancelled", 400);
-        }
-
-        if (targetOrder.status === "COMPLETED" || targetOrder.status === "CANCELLED") {
-            return errorResponse(res, "Target order is already completed or cancelled", 400);
-        }
+        if (!targetOrderId) return errorResponse(res, "Target order ID is required", 400);
+        const prisma = req.tenantDb;
+        const sourceOrder = await prisma.order.findFirst({ where: { id: sourceOrderId, restaurantId: req.user.restaurantId }, include: { orderItems: true, bill: true, table: true } });
+        if (!sourceOrder) return errorResponse(res, "Source order not found", 404);
+        if (sourceOrder.bill) return errorResponse(res, "Cannot merge order after bill generation", 400);
+        const targetOrder = await prisma.order.findFirst({ where: { id: Number(targetOrderId), restaurantId: req.user.restaurantId }, include: { bill: true, table: true } });
+        if (!targetOrder) return errorResponse(res, "Target order not found", 404);
+        if (targetOrder.bill) return errorResponse(res, "Cannot merge into order with existing bill", 400);
+        if (sourceOrder.status === "COMPLETED" || sourceOrder.status === "CANCELLED") return errorResponse(res, "Source order is already completed or cancelled", 400);
+        if (targetOrder.status === "COMPLETED" || targetOrder.status === "CANCELLED") return errorResponse(res, "Target order is already completed or cancelled", 400);
+        if (sourceOrderId === Number(targetOrderId)) return errorResponse(res, "Cannot merge an order with itself", 400);
+        const existingSourceMerge = await prisma.mergeGroup.findFirst({ where: { restaurantId: req.user.restaurantId, status: "ACTIVE", tables: { some: { originalOrderId: sourceOrderId } } } });
+        if (existingSourceMerge) return errorResponse(res, "Source order is already part of a merge", 400);
+        const existingTargetMerge = await prisma.mergeGroup.findFirst({ where: { primaryOrderId: Number(targetOrderId), status: "ACTIVE" } });
 
         await prisma.$transaction(async (tx) => {
-            // Move all items from source to target
-            for (const item of sourceOrder.orderItems) {
-                await tx.orderItem.create({
-                    data: {
-                        orderId: Number(targetOrderId),
-                        menuItemId: item.menuItemId,
-                        quantity: item.quantity,
-                        price: item.price,
-                        tax: item.tax,
-                        total: item.total,
-                        notes: item.notes
-                    }
-                });
-            }
-
-            // Cancel source order
-            await tx.order.update({
-                where: { id: sourceOrderId },
-                data: {
-                    status: "CANCELLED",
-                    cancelledAt: new Date(),
-                    cancelReason: "Merged into order " + targetOrder.orderNo
-                }
-            });
-
-            // Recalculate target order
-            const updatedTarget = await tx.order.findUnique({
-                where: { id: Number(targetOrderId) },
-                include: { orderItems: true }
-            });
-
-            let newSubtotal = 0;
-            let newTaxAmount = 0;
-            for (const item of updatedTarget.orderItems) {
-                newSubtotal += item.price * item.quantity;
-                newTaxAmount += item.tax;
-            }
-
+            let mergeGroup;
+            if (existingTargetMerge) { mergeGroup = existingTargetMerge; }
+            else { mergeGroup = await tx.mergeGroup.create({ data: { restaurantId: req.user.restaurantId, primaryOrderId: Number(targetOrderId), status: "ACTIVE" } }); }
+            for (const item of sourceOrder.orderItems) { await tx.orderItem.update({ where: { id: item.id }, data: { orderId: Number(targetOrderId) } }); }
+            await tx.order.update({ where: { id: sourceOrderId }, data: { status: "CANCELLED", cancelledAt: new Date(), cancelReason: "Merged into order " + targetOrder.orderNo } });
+            await tx.mergeGroupTable.create({ data: { mergeGroupId: mergeGroup.id, tableId: sourceOrder.tableId, originalOrderId: sourceOrderId } });
+            if (!existingTargetMerge) await tx.mergeGroupTable.create({ data: { mergeGroupId: mergeGroup.id, tableId: targetOrder.tableId, originalOrderId: Number(targetOrderId) } });
+            const updatedTarget = await tx.order.findUnique({ where: { id: Number(targetOrderId) }, include: { orderItems: true } });
+            let newSubtotal = 0, newTaxAmount = 0;
+            for (const item of updatedTarget.orderItems) { newSubtotal += item.price * item.quantity; newTaxAmount += item.tax; }
             let discount = 0;
-            if (updatedTarget.discountType === "FLAT") {
-                discount = updatedTarget.discountValue;
-            } else if (updatedTarget.discountType === "PERCENTAGE") {
-                discount = (newSubtotal * updatedTarget.discountValue) / 100;
-            }
+            if (updatedTarget.discountType === "FLAT") discount = updatedTarget.discountValue;
+            else if (updatedTarget.discountType === "PERCENTAGE") discount = (newSubtotal * updatedTarget.discountValue) / 100;
             if (discount > newSubtotal) discount = newSubtotal;
-
             const newTotal = newSubtotal - discount + newTaxAmount + updatedTarget.serviceCharge;
-
-            await tx.order.update({
-                where: { id: Number(targetOrderId) },
-                data: {
-                    subtotal: newSubtotal,
-                    taxAmount: newTaxAmount,
-                    discount,
-                    totalAmount: newTotal
-                }
-            });
-
-            // Update KOT if exists
-            const targetKot = await tx.kOT.findFirst({
-                where: { orderId: Number(targetOrderId) }
-            });
-            if (targetKot) {
-                await tx.kOT.update({
-                    where: { id: targetKot.id },
-                    data: { notes: (targetKot.notes || "") + " [Merged: " + sourceOrder.orderNo + "]" }
-                });
-            }
-
-            // Release source table if applicable
-            if (sourceOrder.tableId) {
-                await tx.restaurantTable.update({
-                    where: { id: sourceOrder.tableId },
-                    data: { status: "AVAILABLE" }
-                });
-            }
+            await tx.order.update({ where: { id: Number(targetOrderId) }, data: { subtotal: newSubtotal, taxAmount: newTaxAmount, discount, totalAmount: newTotal } });
+            const targetKot = await tx.kOT.findFirst({ where: { orderId: Number(targetOrderId) } });
+            if (targetKot) await tx.kOT.update({ where: { id: targetKot.id }, data: { notes: (targetKot.notes || "") + " [Merged: " + sourceOrder.orderNo + "]" } });
+            // Do NOT mark source table as AVAILABLE — it is part of an active merge group
+            // and remains OCCUPIED until the merge is split or paid.
+            // The MergeGroupTable record preserves the table-order relationship for split.
         });
 
         const updatedTargetOrder = await prisma.order.findUnique({
             where: { id: Number(targetOrderId) },
-            include: {
-                table: true,
-                customer: true,
-                orderItems: { include: { menuItem: true } }
+            include: { table: true, customer: true, orderItems: { include: { menuItem: true } },
+                mergeGroupsAsPrimary: { where: { status: "ACTIVE" }, include: { tables: { include: { table: true, originalOrder: { select: { id: true, orderNo: true, tableId: true } } } } } }
             }
         });
-
-        try {
-            emitOrderEvent(req.user.restaurantId, "merged", {
-                sourceOrderId, targetOrderId,
-                sourceNo: sourceOrder.orderNo
-            });
-        } catch (sockErr) {}
-
+        try { emitOrderEvent(req.user.restaurantId, "merged", { sourceOrderId, targetOrderId, sourceNo: sourceOrder.orderNo }); } catch (sockErr) {}
         return successResponse(res, updatedTargetOrder, "Orders merged successfully");
-
-    } catch (error) {
-        console.error("mergeOrders error:", error);
-        return errorResponse(res, error.message);
-    }
+    } catch (error) { console.error("mergeOrders error:", error); return errorResponse(res, error.message); }
 };
+
+// ── Split Orders (reverse a merge) ──
+const splitOrders = async (req, res) => {
+    try {
+        const { mergeGroupId } = req.body;
+        if (!mergeGroupId) return errorResponse(res, "Merge group ID is required", 400);
+        const prisma = req.tenantDb;
+        const mergeGroup = await prisma.mergeGroup.findFirst({
+            where: { id: Number(mergeGroupId), restaurantId: req.user.restaurantId, status: "ACTIVE" },
+            include: { tables: { include: { originalOrder: { include: { orderItems: true } } } }, primaryOrder: true }
+        });
+        if (!mergeGroup) return errorResponse(res, "Active merge group not found", 404);
+        await prisma.$transaction(async (tx) => {
+            for (const mgt of mergeGroup.tables) {
+                const origOrder = mgt.originalOrder;
+                if (origOrder.id === mergeGroup.primaryOrderId) continue;
+                await tx.order.update({ where: { id: origOrder.id }, data: { status: "PENDING", cancelledAt: null, cancelReason: null } });
+                if (mgt.tableId) await tx.restaurantTable.update({ where: { id: mgt.tableId }, data: { status: "OCCUPIED" } });
+            }
+            await tx.mergeGroup.update({ where: { id: mergeGroup.id }, data: { status: "SPLIT" } });
+        });
+        const updatedPrimaryOrder = await prisma.order.findUnique({ where: { id: mergeGroup.primaryOrderId }, include: { table: true, customer: true, orderItems: { include: { menuItem: true } } } });
+        try { emitOrderEvent(req.user.restaurantId, "split", { mergeGroupId: mergeGroup.id, primaryOrderId: mergeGroup.primaryOrderId }); } catch (sockErr) {}
+        return successResponse(res, updatedPrimaryOrder, "Orders split successfully");
+    } catch (error) { console.error("splitOrders error:", error); return errorResponse(res, error.message); }
+};
+
 
 // ── Update Order Notes (uses existing `notes` field with JSON to store multiple note types) ──
 const updateOrderNotes = async (req, res) => {
@@ -2366,5 +2419,6 @@ module.exports = {
     changeTable,
     deleteOrder,
     mergeOrders,
+    splitOrders,
     updateOrderNotes
 };

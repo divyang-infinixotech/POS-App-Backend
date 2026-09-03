@@ -63,10 +63,8 @@ app.use(
             if (isOriginAllowed(origin)) {
                 return callback(null, true);
             }
-            // Block unknown origins cleanly (403, never a 500)
-            const err = new Error("Origin not allowed");
-            err.statusCode = 403;
-            return callback(err);
+            // Return false — does not set CORS headers, browser sees the block
+            return callback(null, false);
         },
         credentials: true,
         methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -115,6 +113,24 @@ app.use((req, res, next) => {
     console.log(`⬅ ${req.method} ${clean(req.originalUrl)} → ${res.statusCode} (${ms}ms)`);
   });
   next();
+});
+
+// ─── API responses are never cacheable (multi-tenant safety + 304 fix) ───
+// Dynamic tenant-scoped JSON must always reach the browser as a full 200 body:
+// Express emits weak ETags on API responses with no Cache-Control, so browsers
+// store them and later revalidate with If-None-Match. The resulting
+// 304 Not Modified has an EMPTY body, which axios surfaces as
+// response.data === "" and the SPA rejects as "Invalid response format".
+// Caching tenant data by bare URL also risks replaying one restaurant's
+// staff/order lists into another restaurant's session on the same browser.
+// no-store keeps dynamic API payloads out of the HTTP cache; stripping the
+// conditional-request headers guarantees a full 200 even if a stale
+// client/proxy still revalidates. Static assets (/uploads) are NOT affected.
+app.use("/api", (req, res, next) => {
+    res.set("Cache-Control", "no-store, private");
+    delete req.headers["if-none-match"];
+    delete req.headers["if-modified-since"];
+    next();
 });
 
 // ─── Routes ───

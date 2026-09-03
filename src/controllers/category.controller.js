@@ -1,4 +1,4 @@
-const prisma = require("../config/prisma");
+// tenantDb is available as req.tenantDb (attached by auth middleware)
 const { successResponse, errorResponse } = require("../utils/response");
 
 const createCategory = async (req, res) => {
@@ -6,11 +6,8 @@ const createCategory = async (req, res) => {
     const { name, image, color, icon, sortOrder, isActive } = req.body;
 
     const existingCategory =
-      await prisma.category.findFirst({
-        where: {
-          restaurantId: req.user.restaurantId,
-          name
-        }
+      await req.tenantDb.category.findFirst({
+        where: { name }
       });
 
     if (existingCategory) {
@@ -21,7 +18,7 @@ const createCategory = async (req, res) => {
     }
 
     const category =
-      await prisma.category.create({
+      await req.tenantDb.category.create({
         data: {
           restaurantId: req.user.restaurantId,
           name,
@@ -39,13 +36,13 @@ const createCategory = async (req, res) => {
     });
 
   } catch (error) {
-
-    console.error(error);return errorResponse(res, error.message);}
+    console.error(error);
+    return errorResponse(res, error.message);
+  }
 };
 
 const getCategories = async (req, res) => {
   try {
-
     if (!req.user.restaurantId) {
       return res.status(200).json({
         success: true,
@@ -54,16 +51,9 @@ const getCategories = async (req, res) => {
     }
 
     const categories =
-      await prisma.category.findMany({
-
-        where: {
-          restaurantId: req.user.restaurantId
-        },
-
-        orderBy: {
-          name: "asc"
-        }
-
+      await req.tenantDb.category.findMany({
+        where: {},
+        orderBy: { name: "asc" }
       });
 
     res.status(200).json({
@@ -71,148 +61,74 @@ const getCategories = async (req, res) => {
       categories
     });
 
-  } catch (error) {return errorResponse(res, error.message);}
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
 };
 
 const updateCategory = async (req, res) => {
-
   try {
-
     const { id } = req.params;
-
     const { name, image, color, icon, sortOrder, isActive } = req.body;
 
-    // Check category belongs to logged-in restaurant
-    const existingCategory = await prisma.category.findFirst({
-
-      where: {
-
-        id: Number(id),
-
-        restaurantId: req.user.restaurantId
-
-      }
-
+    const existingCategory = await req.tenantDb.category.findFirst({
+      where: { id: Number(id) }
     });
 
     if (!existingCategory) {
-
       return res.status(404).json({
-
         success: false,
-
         message: "Category not found"
-
       });
-
     }
 
-    // Check duplicate category name within same restaurant
-    const duplicateCategory = await prisma.category.findFirst({
-
+    const duplicateCategory = await req.tenantDb.category.findFirst({
       where: {
-
-        restaurantId: req.user.restaurantId,
-
         name,
-
-        NOT: {
-
-          id: Number(id)
-
-        }
-
+        NOT: { id: Number(id) }
       }
-
     });
 
     if (duplicateCategory) {
-
       return res.status(400).json({
-
         success: false,
-
         message: "Category name already exists"
-
       });
-
     }
 
-    const category = await prisma.category.update({
-
-      where: {
-
-        id: Number(id)
-
-      },
-
-      data: {
-
-        name,
-
-        image,
-
-        color,
-
-        icon,
-
-        sortOrder,
-
-        isActive
-
-      }
-
+    const category = await req.tenantDb.category.update({
+      where: { id: Number(id) },
+      data: { name, image, color, icon, sortOrder, isActive }
     });
 
     return res.status(200).json({
-
       success: true,
-
       message: "Category updated successfully",
-
       category
-
     });
 
   } catch (error) {
-
-    console.error(error);return errorResponse(res, error.message);}
-
+    console.error(error);
+    return errorResponse(res, error.message);
+  }
 };
 
 const deleteCategory = async (req, res) => {
   try {
-
     const { id } = req.params;
-
-    const category =
-      await prisma.category.findFirst({
-
-        where: {
-          id: Number(id),
-          restaurantId: req.user.restaurantId
-        }
-
-      });
+    const category = await req.tenantDb.category.findFirst({
+      where: { id: Number(id) }
+    });
 
     if (!category) {
-
       return res.status(404).json({
-
         success: false,
-
         message: "Category not found"
-
       });
-
     }
 
-    await prisma.category.delete({
-
-      where: {
-        id: category.id
-      }
-
+    await req.tenantDb.category.delete({
+      where: { id: category.id }
     });
 
     res.status(200).json({
@@ -220,7 +136,9 @@ const deleteCategory = async (req, res) => {
       message: "Category deleted"
     });
 
-  } catch (error) {return errorResponse(res, error.message);}
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
 };
 
 module.exports = {

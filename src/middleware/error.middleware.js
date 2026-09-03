@@ -46,9 +46,23 @@ const errorHandler = (err, req, res, next) => {
     // client-input problems — return a clean 400, never a 500 with the raw
     // Prisma invocation details. The full error is still logged above.
     if (err && err.name === "PrismaClientValidationError") {
+        // Detailed dev logging: helps diagnose schema/model mismatch issues
+        console.error("[API ERROR] PrismaClientValidationError", {
+            method: req.method,
+            path: req.originalUrl,
+            restaurantId: req.user?.restaurantId,
+            tenantSchema: req.restaurant?.tenantSchema || req.tenantSchema || null,
+            hasTenantDb: !!req.tenantDb,
+            error: err.message,
+            stack: err.stack?.split('\n').slice(0, 5).join('\n')
+        });
+        // Return the actual error message in dev, sanitized in production
+        const devMessage = process.env.NODE_ENV === 'production'
+            ? "Internal Server Error"
+            : err.message || "Invalid request parameters";
         return res.status(400).json({
             success: false,
-            message: "Invalid request parameters"
+            message: devMessage
         });
     }
 

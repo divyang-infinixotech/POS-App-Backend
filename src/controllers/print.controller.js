@@ -1,28 +1,27 @@
-const prisma = require("../config/prisma");
 const { successResponse, errorResponse } = require("../utils/response");
 
 const {
-
     generateReceipt
-
 } = require("../services/receipt.service");
 
 const {
-
     generateInvoice
-
 } = require("../services/invoice.service");
 
 const printReceipt = async (req, res) => {
   try {
+    const prisma = req.tenantDb;
+    if (!prisma) {
+      return errorResponse(res, "Tenant database not available", 503);
+    }
+
     const restaurantSetting = await prisma.restaurantSetting.findUnique({
       where: { restaurantId: req.user.restaurantId }
     });
 
     const bill = await prisma.bill.findFirst({
       where: {
-        id: Number(req.params.id),
-        restaurantId: req.user.restaurantId
+        id: Number(req.params.id)
       },
       include: {
         payments: true,
@@ -46,7 +45,6 @@ const printReceipt = async (req, res) => {
       });
     }
 
-    // Merge restaurant settings for PDF header
     const billData = {
       ...bill,
       restaurant: restaurantSetting || null,
@@ -61,19 +59,26 @@ const printReceipt = async (req, res) => {
     };
 
     return generateReceipt(billData, res);
-  } catch (error) {return errorResponse(res, error.message);}
+  } catch (error) {
+    console.error("printReceipt error:", error);
+    return errorResponse(res, error.message);
+  }
 };
 
 const printInvoice = async (req, res) => {
   try {
+    const prisma = req.tenantDb;
+    if (!prisma) {
+      return errorResponse(res, "Tenant database not available", 503);
+    }
+
     const restaurantSetting = await prisma.restaurantSetting.findUnique({
       where: { restaurantId: req.user.restaurantId }
     });
 
     const bill = await prisma.bill.findFirst({
       where: {
-        id: Number(req.params.id),
-        restaurantId: req.user.restaurantId
+        id: Number(req.params.id)
       },
       include: {
         payments: true,
@@ -119,13 +124,13 @@ const printInvoice = async (req, res) => {
     };
 
     return generateInvoice(billData, res);
-  } catch (error) {return errorResponse(res, error.message);}
+  } catch (error) {
+    console.error("printInvoice error:", error);
+    return errorResponse(res, error.message);
+  }
 };
 
 module.exports = {
-
     printReceipt,
-
     printInvoice
-
 };

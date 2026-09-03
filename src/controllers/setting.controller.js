@@ -1,7 +1,8 @@
-const prisma = require("../config/prisma");
+// tenantDb is available as req.tenantDb (attached by auth middleware)
 const { successResponse, errorResponse } = require("../utils/response");
 
 const createOrUpdateSetting = async (req, res) => {
+  const prisma = req.tenantDb;
   try {
     // Destructure ALL possible fields from request body
     const {
@@ -200,6 +201,7 @@ const createOrUpdateSetting = async (req, res) => {
 };
 
 const getSetting = async (req, res) => {
+  const prisma = req.tenantDb;
 
   try {
 
@@ -230,17 +232,19 @@ const getSetting = async (req, res) => {
     }
 
     // Derive the effective businessMode from the subscription plan (authoritative source)
+    // Subscription is a PLATFORM model (public schema) — must use platformPrisma
     let effectiveBusinessMode = (setting && setting.businessMode) || 'restaurant';
     try {
-      const subscription = await prisma.subscription.findFirst({
+      const { platformPrisma } = require('../config/tenantPrisma');
+      const subscription = await platformPrisma.subscription.findFirst({
         where: { restaurantId: req.user.restaurantId },
-        select: { businessMode: true }
+        select: { id: true, businessMode: true, status: true, planId: true }
       });
       if (subscription && subscription.businessMode) {
         effectiveBusinessMode = subscription.businessMode === 'BASIC_POS' ? 'counter' : 'restaurant';
       }
     } catch (subErr) {
-      // Silent fail - fall back to setting value
+      console.error('[Settings] Subscription lookup failed:', subErr.message);
     }
 
     if (!setting) {

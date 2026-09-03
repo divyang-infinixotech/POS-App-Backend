@@ -10,7 +10,7 @@ const {
 } = require("../services/super-admin.service");
 const { successResponse, errorResponse } = require("../utils/response");
 const { createAuditLog } = require("../services/audit.service");
-const prismaDb = require("../config/prisma");
+const { platformPrisma: prismaDb } = require("../config/tenantPrisma");
 const {
   getGatewayStatus, getGatewayConfig, saveGatewayConfig, setGatewayEnabled,
   getPaymentMetrics, listAllPayments,

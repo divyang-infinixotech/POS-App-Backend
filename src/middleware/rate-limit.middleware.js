@@ -32,6 +32,7 @@ function isExcludedPath(req) {
   }
 
   return (
+    req.method === "OPTIONS" ||
     path.startsWith("/socket.io/") ||
     path === "/" ||
     path.startsWith("/uploads/")

@@ -1,4 +1,5 @@
-const prisma = require("../config/prisma");
+const { platformPrisma } = require("../config/tenantPrisma");
+const { getTenantClientByRestaurantId } = require("../config/tenantPrisma");
 const logger = require("../logger/logger");
 
 const {
@@ -44,7 +45,7 @@ async function resolveRestaurantId(req) {
     }
 
     try {
-        const firstRestaurant = await prisma.restaurant.findFirst({
+        const firstRestaurant = await platformPrisma.restaurant.findFirst({
             where: { status: "ACTIVE" },
             select: { id: true },
             orderBy: { id: "asc" }
@@ -56,6 +57,26 @@ async function resolveRestaurantId(req) {
         logger.error({ message: "Failed to resolve restaurant for SUPER_ADMIN", error: err.message, userId: req.user.id });
     }
 
+    return null;
+}
+
+/**
+ * Resolve a tenant Prisma client for the given restaurantId.
+ * For restaurant users, uses the already-attached req.tenantDb.
+ * For SUPER_ADMIN, creates a tenant client for the target restaurant.
+ */
+async function resolveTenantDb(req, restaurantId) {
+    if (req.tenantDb && req.user.restaurantId === restaurantId) {
+        return req.tenantDb;
+    }
+    if (req.user.role === "SUPER_ADMIN" && restaurantId) {
+        try {
+            const { client } = await getTenantClientByRestaurantId(restaurantId);
+            return client;
+        } catch (err) {
+            logger.error({ message: "Failed to resolve tenant client for dashboard", error: err.message, restaurantId });
+        }
+    }
     return null;
 }
 
@@ -108,7 +129,11 @@ const dashboard = async (req, res) => {
         if (!restaurantId) {
             return successResponse(res, getEmptyDashboard(), "Dashboard (no restaurant data)");
         }
-        const data = await getDashboard(restaurantId);
+        const tenantDb = await resolveTenantDb(req, restaurantId);
+        if (!tenantDb) {
+            return successResponse(res, getEmptyDashboard(), "Dashboard (tenant unavailable)");
+        }
+        const data = await getDashboard(restaurantId, tenantDb);
         return successResponse(res, data, "Dashboard");
     } catch (error) {
         logger.error({ message: "Dashboard error", error: error.message, stack: error.stack, userId: req.user.id, role: req.user.role });
@@ -123,7 +148,7 @@ const dashboardSummary = async (req, res) => {
         if (!restaurantId) {
             return successResponse(res, getEmptyDashboard().summary, "Dashboard Summary (no data)");
         }
-        const data = await getSummary(restaurantId);
+        const data = await getSummary(restaurantId, await resolveTenantDb(req, restaurantId));
         return successResponse(res, data, "Dashboard Summary");
     } catch (error) {
         logger.error({ message: "Dashboard Summary error", error: error.message, stack: error.stack, userId: req.user.id, role: req.user.role });
@@ -138,7 +163,7 @@ const salesDashboard = async (req, res) => {
         if (!restaurantId) {
             return successResponse(res, getEmptyDashboard().sales, "Sales Dashboard (no data)");
         }
-        const data = await getSalesSummary(restaurantId);
+        const data = await getSalesSummary(restaurantId, await resolveTenantDb(req, restaurantId));
         return successResponse(res, data, "Sales Dashboard");
     } catch (error) {
         logger.error({ message: "Sales Dashboard error", error: error.message, stack: error.stack, userId: req.user.id, role: req.user.role });
@@ -153,7 +178,7 @@ const tableDashboard = async (req, res) => {
         if (!restaurantId) {
             return successResponse(res, getEmptyDashboard().tables, "Table Dashboard (no data)");
         }
-        const data = await getTableSummary(restaurantId);
+        const data = await getTableSummary(restaurantId, await resolveTenantDb(req, restaurantId));
         return successResponse(res, data, "Table Dashboard");
     } catch (error) {
         logger.error({ message: "Table Dashboard error", error: error.message, stack: error.stack, userId: req.user.id, role: req.user.role });
@@ -168,7 +193,7 @@ const kitchenDashboard = async (req, res) => {
         if (!restaurantId) {
             return successResponse(res, getEmptyDashboard().kitchen, "Kitchen Dashboard (no data)");
         }
-        const data = await getKitchenSummary(restaurantId);
+        const data = await getKitchenSummary(restaurantId, await resolveTenantDb(req, restaurantId));
         return successResponse(res, data, "Kitchen Dashboard");
     } catch (error) {
         logger.error({ message: "Kitchen Dashboard error", error: error.message, stack: error.stack, userId: req.user.id, role: req.user.role });
@@ -183,7 +208,7 @@ const paymentDashboard = async (req, res) => {
         if (!restaurantId) {
             return successResponse(res, getEmptyDashboard().payments, "Payment Dashboard (no data)");
         }
-        const data = await getPaymentSummary(restaurantId);
+        const data = await getPaymentSummary(restaurantId, await resolveTenantDb(req, restaurantId));
         return successResponse(res, data, "Payment Dashboard");
     } catch (error) {
         logger.error({ message: "Payment Dashboard error", error: error.message, stack: error.stack, userId: req.user.id, role: req.user.role });
@@ -198,7 +223,7 @@ const recentOrdersDashboard = async (req, res) => {
         if (!restaurantId) {
             return successResponse(res, [], "Recent Orders (no data)");
         }
-        const data = await getRecentOrders(restaurantId);
+        const data = await getRecentOrders(restaurantId, await resolveTenantDb(req, restaurantId));
         return successResponse(res, data, "Recent Orders");
     } catch (error) {
         logger.error({ message: "Recent Orders error", error: error.message, stack: error.stack, userId: req.user.id, role: req.user.role });
@@ -213,7 +238,7 @@ const topItemsDashboard = async (req, res) => {
         if (!restaurantId) {
             return successResponse(res, [], "Top Items (no data)");
         }
-        const data = await getTopItems(restaurantId);
+        const data = await getTopItems(restaurantId, await resolveTenantDb(req, restaurantId));
         return successResponse(res, data, "Top Selling Items");
     } catch (error) {
         logger.error({ message: "Top Items error", error: error.message, stack: error.stack, userId: req.user.id, role: req.user.role });
@@ -228,7 +253,7 @@ const categorySalesDashboard = async (req, res) => {
         if (!restaurantId) {
             return successResponse(res, [], "Category Sales (no data)");
         }
-        const data = await getCategorySales(restaurantId);
+        const data = await getCategorySales(restaurantId, await resolveTenantDb(req, restaurantId));
         return successResponse(res, data, "Category Sales");
     } catch (error) {
         logger.error({ message: "Category Sales error", error: error.message, stack: error.stack, userId: req.user.id, role: req.user.role });
@@ -243,7 +268,7 @@ const recentPaymentsDashboard = async (req, res) => {
         if (!restaurantId) {
             return successResponse(res, [], "Recent Payments (no data)");
         }
-        const data = await getRecentPayments(restaurantId);
+        const data = await getRecentPayments(restaurantId, await resolveTenantDb(req, restaurantId));
         return successResponse(res, data, "Recent Payments");
     } catch (error) {
         logger.error({ message: "Recent Payments error", error: error.message, stack: error.stack, userId: req.user.id, role: req.user.role });
@@ -258,7 +283,7 @@ const liveOrdersDashboard = async (req, res) => {
         if (!restaurantId) {
             return successResponse(res, [], "Live Orders (no data)");
         }
-        const data = await getLiveOrders(restaurantId);
+        const data = await getLiveOrders(restaurantId, await resolveTenantDb(req, restaurantId));
         return successResponse(res, data, "Live Orders");
     } catch (error) {
         logger.error({ message: "Live Orders error", error: error.message, stack: error.stack, userId: req.user.id, role: req.user.role });
@@ -273,7 +298,7 @@ const hourlySalesDashboard = async (req, res) => {
         if (!restaurantId) {
             return successResponse(res, getEmptyDashboard().hourlySales, "Hourly Sales (no data)");
         }
-        const data = await getHourlySales(restaurantId);
+        const data = await getHourlySales(restaurantId, await resolveTenantDb(req, restaurantId));
         return successResponse(res, data, "Hourly Sales");
     } catch (error) {
         logger.error({ message: "Hourly Sales error", error: error.message, stack: error.stack, userId: req.user.id, role: req.user.role });
@@ -288,7 +313,7 @@ const staffDashboard = async (req, res) => {
         if (!restaurantId) {
             return successResponse(res, getEmptyDashboard().staff, "Staff Dashboard (no data)");
         }
-        const data = await getStaffDashboard(restaurantId);
+        const data = await getStaffDashboard(restaurantId, await resolveTenantDb(req, restaurantId));
         return successResponse(res, data, "Staff Dashboard");
     } catch (error) {
         logger.error({ message: "Staff Dashboard error", error: error.message, stack: error.stack, userId: req.user.id, role: req.user.role });

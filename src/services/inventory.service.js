@@ -261,8 +261,9 @@ async function restoreStockForCancelledOrder(tx, order, restaurantId, createdBy 
  * Convenience wrapper: restore inside its own transaction
  * (used by non-transactional endpoints like cancel/delete).
  */
-async function restoreOrderStockAtomic(orderId, restaurantId, createdBy = null) {
-  return prisma.$transaction(async (tx) => {
+async function restoreOrderStockAtomic(orderId, restaurantId, createdBy = null, tenantDb = null) {
+  const client = tenantDb || prisma;
+  return client.$transaction(async (tx) => {
     const order = await tx.order.findUnique({
       where: { id: Number(orderId) },
       include: { orderItems: true },

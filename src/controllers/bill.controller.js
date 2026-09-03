@@ -1,4 +1,4 @@
-const prisma = require("../config/prisma");
+// tenantDb is available as req.tenantDb (attached by auth middleware)
 const {
     generateBillNumber
 } = require("../utils/numberGenerator");
@@ -14,16 +14,17 @@ const {
 } = require("../utils/discount");
 
 // ─── Audit helper ───
-const createAuditLogEntry = async (data) => {
+const createAuditLogEntry = async (data, dbOverride) => {
   try {
     const { createAuditLog } = require("../services/audit.service");
-    await createAuditLog(data);
+    await createAuditLog(data, dbOverride || null);
   } catch (err) {
     console.error("Audit log error:", err.message);
   }
 };
 
 const createBill = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -39,11 +40,7 @@ const createBill = async (req, res) => {
 
         const order = await prisma.order.findFirst({
 
-            where: {
-
-                id: Number(orderId),
-
-                restaurantId: req.user.restaurantId
+            where: {                id: Number(orderId)
 
             }
 
@@ -128,7 +125,7 @@ const createBill = async (req, res) => {
             bill = await prisma.bill.create({
                 data: {
                     restaurantId: req.user.restaurantId,
-                    billNo: await generateBillNumber(),
+                    billNo: await generateBillNumber(prisma),
                     orderId,
                     subtotal: order.subtotal,
                     discount: discountAmount,
@@ -154,17 +151,55 @@ const createBill = async (req, res) => {
             throw err;
         }
 
-        await createNotification({
-            restaurantId: req.user.restaurantId,
-            userId: req.user.id,
-            title: "Bill Generated",
-            message: `Bill ${bill.billNo} generated.`,
-            type: "SUCCESS"
-        });
+        try {
+            await createNotification(prisma, {
+                restaurantId: req.user.restaurantId,
+                userId: req.user.id,
+                title: "Bill Generated",
+                message: `Bill ${bill.billNo} generated.`,
+                type: "SUCCESS"
+            });
+        } catch (notifErr) {
+            console.error("[Bill] Notification creation failed (non-critical):", notifErr.message);
+        }
+
+        // ── Attach restaurant identity for bill printing ──
+        let restaurantIdentity = null;
+        try {
+            const setting = await prisma.restaurantSetting.findFirst({
+                where: { restaurantId: req.user.restaurantId },
+                select: {
+                    restaurantName: true,
+                    address: true,
+                    phone: true,
+                    email: true,
+                    gstNumber: true,
+                    fssaiNumber: true,
+                    logo: true,
+                    receiptFooter: true,
+                    currency: true,
+                }
+            });
+            if (setting) {
+                restaurantIdentity = {
+                    name: setting.restaurantName,
+                    address: setting.address,
+                    phone: setting.phone,
+                    email: setting.email,
+                    gstNumber: setting.gstNumber,
+                    fssaiNumber: setting.fssaiNumber,
+                    logo: setting.logo,
+                    receiptFooter: setting.receiptFooter,
+                    currency: setting.currency,
+                };
+            }
+        } catch (settingErr) {
+            // Non-critical: bill printing will fall back to settings store
+        }
 
         return successResponse(
             res,
-            bill,
+            { ...bill, restaurant: restaurantIdentity },
             "Bill Generated",
             201
         );
@@ -182,12 +217,13 @@ const createBill = async (req, res) => {
 
 };
 const updateBillDiscount = async (req, res) => {
+  const prisma = req.tenantDb;
   try {
     const billId = Number(req.params.id);
     const { discountType, discountValue, discountReason } = req.body;
 
     const bill = await prisma.bill.findFirst({
-      where: { id: billId, restaurantId: req.user.restaurantId }
+      where: {                id: billId, }
     });
 
     if (!bill) {
@@ -250,7 +286,7 @@ const updateBillDiscount = async (req, res) => {
       description: `Applied ${discountType === "PERCENTAGE" ? discountValue + "%" : "₹" + discountValue} discount on Bill ${bill.billNo}. Amount: ₹${discountAmount}`,
       referenceId: updatedBill.id,
       referenceNo: updatedBill.billNo,
-    });
+    }, prisma);
 
     return successResponse(res, updatedBill, "Discount applied successfully");
   } catch (error) {
@@ -260,6 +296,7 @@ const updateBillDiscount = async (req, res) => {
 };
 
 const getBills = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -365,6 +402,7 @@ const getBills = async (req, res) => {
 };
 
 const getBillById = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -402,27 +440,53 @@ const getBillById = async (req, res) => {
 
             }
 
-        });
-
-        if (!bill) {
-
+        });        if (!bill) {
             return errorResponse(
-
                 res,
-
                 "Bill not found",
-
                 404
-
             );
+        }
 
+        // ── Attach restaurant identity for bill printing ──
+        // The frontend needs this to render the correct restaurant name/logo
+        // on the printed bill. Non-breaking addition to the response.
+        let restaurantIdentity = null;
+        try {
+            const setting = await prisma.restaurantSetting.findFirst({
+                where: { restaurantId: req.user.restaurantId },
+                select: {
+                    restaurantName: true,
+                    address: true,
+                    phone: true,
+                    email: true,
+                    gstNumber: true,
+                    fssaiNumber: true,
+                    logo: true,
+                    receiptFooter: true,
+                    currency: true,
+                }
+            });
+            if (setting) {
+                restaurantIdentity = {
+                    name: setting.restaurantName,
+                    address: setting.address,
+                    phone: setting.phone,
+                    email: setting.email,
+                    gstNumber: setting.gstNumber,
+                    fssaiNumber: setting.fssaiNumber,
+                    logo: setting.logo,
+                    receiptFooter: setting.receiptFooter,
+                    currency: setting.currency,
+                };
+            }
+        } catch (settingErr) {
+            // Non-critical: bill printing will fall back to settings store
         }
 
         return successResponse(
-
             res,
-
-            bill,
+            { ...bill, restaurant: restaurantIdentity },
 
             "Bill Details"
 
@@ -445,6 +509,7 @@ const getBillById = async (req, res) => {
 };
 
 const cancelBill = async (req, res) => {
+    const prisma = req.tenantDb;
 
     try {
 
@@ -452,15 +517,7 @@ const cancelBill = async (req, res) => {
 
         const { reason } = req.body;
 
-        const bill = await prisma.bill.findFirst({
-
-            where: {
-
-                id: billId,
-
-                restaurantId: req.user.restaurantId
-
-            },
+        const bill = await prisma.bill.findFirst({      where: { id: billId },
 
             include: {
 

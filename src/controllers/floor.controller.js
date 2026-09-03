@@ -1,4 +1,4 @@
-const prisma = require("../config/prisma");
+// tenantDb is available as req.tenantDb (attached by auth middleware)
 const { successResponse, errorResponse } = require("../utils/response");
 
 // ─── Get All Floors ────────────────────────────────────────────────────────────
@@ -7,8 +7,8 @@ const getFloors = async (req, res) => {
     if (!req.user.restaurantId) {
       return res.json({ success: true, floors: [] });
     }
-    const floors = await prisma.floor.findMany({
-      where: { restaurantId: req.user.restaurantId },
+    const floors = await req.tenantDb.floor.findMany({
+      where: {},
       orderBy: { sortOrder: "asc" },
     });
     res.json({ success: true, floors });
@@ -18,9 +18,12 @@ const getFloors = async (req, res) => {
 // ─── Get Single Floor ──────────────────────────────────────────────────────────
 const getFloorById = async (req, res) => {
   try {
-    const { id } = req.params;
-    const floor = await prisma.floor.findFirst({
-      where: { id: Number(id), restaurantId: req.user.restaurantId },
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid floor ID" });
+    }
+    const floor = await req.tenantDb.floor.findFirst({
+      where: { id },
     });
     if (!floor) {
       return res.status(404).json({ success: false, message: "Floor not found" });
@@ -36,13 +39,13 @@ const createFloor = async (req, res) => {
     if (!name) {
       return res.status(400).json({ success: false, message: "Floor name is required" });
     }
-    const exists = await prisma.floor.findFirst({
-      where: { restaurantId: req.user.restaurantId, name },
+    const exists = await req.tenantDb.floor.findFirst({
+      where: { name },
     });
     if (exists) {
       return res.status(400).json({ success: false, message: "Floor already exists" });
     }
-    const floor = await prisma.floor.create({
+    const floor = await req.tenantDb.floor.create({
       data: {
         name,
         floorCode: floorCode || null,
@@ -61,8 +64,8 @@ const updateFloor = async (req, res) => {
   try {
     const { id } = req.params;
     const { name, floorCode, description, isActive, sortOrder } = req.body;
-    const existing = await prisma.floor.findFirst({
-      where: { id: Number(id), restaurantId: req.user.restaurantId },
+    const existing = await req.tenantDb.floor.findFirst({
+      where: { id: Number(id) },
     });
     if (!existing) {
       return res.status(404).json({ success: false, message: "Floor not found" });
@@ -73,7 +76,7 @@ const updateFloor = async (req, res) => {
     if (description !== undefined) data.description = description || null;
     if (isActive !== undefined) data.isActive = isActive;
     if (sortOrder !== undefined) data.sortOrder = sortOrder;
-    const floor = await prisma.floor.update({
+    const floor = await req.tenantDb.floor.update({
       where: { id: existing.id },
       data,
     });
@@ -85,14 +88,14 @@ const updateFloor = async (req, res) => {
 const deleteFloor = async (req, res) => {
   try {
     const { id } = req.params;
-    const existing = await prisma.floor.findFirst({
-      where: { id: Number(id), restaurantId: req.user.restaurantId },
+    const existing = await req.tenantDb.floor.findFirst({
+      where: { id: Number(id) },
     });
     if (!existing) {
       return res.status(404).json({ success: false, message: "Floor not found" });
     }
     // Check if floor has tables
-    const tableCount = await prisma.restaurantTable.count({
+    const tableCount = await req.tenantDb.restaurantTable.count({
       where: { floorId: existing.id },
     });
     if (tableCount > 0) {
@@ -101,7 +104,7 @@ const deleteFloor = async (req, res) => {
         message: `Cannot delete floor. It has ${tableCount} table(s) assigned. Move or delete them first.`,
       });
     }
-    await prisma.floor.delete({ where: { id: existing.id } });
+    await req.tenantDb.floor.delete({ where: { id: existing.id } });
     res.json({ success: true, message: "Floor deleted successfully" });
   } catch (error) {return errorResponse(res, error.message);}
 };

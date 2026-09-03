@@ -1,4 +1,4 @@
-const prisma = require("../config/prisma");
+const { platformPrisma } = require("../config/tenantPrisma");
 const ExcelJS = require("exceljs");
 const { Parser } = require("json2csv");
 
@@ -61,7 +61,8 @@ function dateWhere(restaurantId, from, to, dateField = "createdAt") {
  * made the reports disagree. Multi-tenant isolation is preserved: the bill
  * query is always scoped by restaurantId.
  */
-async function getPaidSalesItems(restaurantId, from, to) {
+async function getPaidSalesItems(restaurantId, from, to, db) {
+    const prisma = db || platformPrisma;
   const billWhere = dateWhere(restaurantId, from, to, "createdAt");
   billWhere.isCancelled = false;
   billWhere.status = "PAID";
@@ -98,7 +99,8 @@ async function getPaidSalesItems(restaurantId, from, to) {
 }
 
 // ── SALES REPORT – KPI cards + bills list ──
-const getSalesReport = async (restaurantId, from, to) => {
+const getSalesReport = async (restaurantId, from, to, db) => {
+    const prisma = db || platformPrisma;
 
   const billWhere = dateWhere(restaurantId, from, to, "createdAt");
   billWhere.isCancelled = false;
@@ -183,8 +185,10 @@ const getSalesReport = async (restaurantId, from, to) => {
     paymentSummary[method] += Number(p.amount);
   });
 
-  // Average Order Value (Total Sales / Completed Orders)
-  const averageOrderValue = completedOrders > 0 ? totalSales / completedOrders : 0;
+  // Average Order Value (Total Sales / Paid Bill Count)
+  // Both numerator and denominator come from the same PAID-bill population
+  // so the metric is always internally consistent.
+  const averageOrderValue = paidBills.length > 0 ? totalSales / paidBills.length : 0;
 
   // ── Item / Category Analytics (from the same PAID-bill source as Total Sales) ──
   const itemAgg = {};
@@ -255,8 +259,9 @@ const getSalesReport = async (restaurantId, from, to) => {
 // ── ITEM SALES REPORT ──
 // Uses the same PAID-bill source as Total Sales. Supports an optional
 // categoryId filter (no-op when omitted).
-const getItemSalesReport = async (restaurantId, from, to, categoryId) => {
-  const { orderItems } = await getPaidSalesItems(restaurantId, from, to);
+const getItemSalesReport = async (restaurantId, from, to, categoryId, db) => {
+    const prisma = db || platformPrisma;
+  const { orderItems } = await getPaidSalesItems(restaurantId, from, to, db);
 
   const report = {};
   orderItems.forEach((item) => {
@@ -306,8 +311,9 @@ const getItemSalesReport = async (restaurantId, from, to, categoryId) => {
 // ── CATEGORY SALES REPORT ──
 // Uses the same PAID-bill source as Total Sales. Includes a per-category item
 // breakdown (items[]) so the UI can expand a category row without extra calls.
-const getCategorySalesReport = async (restaurantId, from, to) => {
-  const { orderItems } = await getPaidSalesItems(restaurantId, from, to);
+const getCategorySalesReport = async (restaurantId, from, to, db) => {
+    const prisma = db || platformPrisma;
+  const { orderItems } = await getPaidSalesItems(restaurantId, from, to, db);
 
   const report = {};
   orderItems.forEach((item) => {
@@ -373,16 +379,8 @@ const getCategorySalesReport = async (restaurantId, from, to) => {
 };
 
 // ── PAYMENT REPORT ──
-const getPaymentReport = async (
-
-    restaurantId,
-
-    from,
-
-    to
-
-) => {
-
+const getPaymentReport = async (restaurantId, from, to, db) => {
+    const prisma = db || platformPrisma;
   const where = dateWhere(restaurantId, from, to, "createdAt");
   where.status = "PAID";
 
@@ -416,7 +414,8 @@ const getPaymentReport = async (
 // ── ORDER REPORT ──
 // Supports optional server-side pagination: pass `page` (1-based) and
 // `pageSize`. When omitted, the full list is returned (backwards compatible).
-const getOrderReport = async (restaurantId, from, to, statusFilter, page, pageSize) => {
+const getOrderReport = async (restaurantId, from, to, statusFilter, page, pageSize, db) => {
+    const prisma = db || platformPrisma;
   const where = dateWhere(restaurantId, from, to, "createdAt");
   where.isDeleted = false;
   if (statusFilter) where.status = statusFilter;
@@ -514,7 +513,8 @@ const getOrderReport = async (restaurantId, from, to, statusFilter, page, pageSi
 };
 
 // ── REVENUE TREND CHART ──
-const getRevenueTrend = async (restaurantId, from, to, interval = "daily") => {
+const getRevenueTrend = async (restaurantId, from, to, interval = "daily", db) => {
+    const prisma = db || platformPrisma;
   const where = dateWhere(restaurantId, from, to, "createdAt");
   where.isCancelled = false;
   where.status = "PAID";
@@ -551,7 +551,8 @@ const getRevenueTrend = async (restaurantId, from, to, interval = "daily") => {
 };
 
 // ── SALES BILLS (for export) ──
-const getSalesBills = async (restaurantId, from, to) => {
+const getSalesBills = async (restaurantId, from, to, db) => {
+    const prisma = db || platformPrisma;
   const where = dateWhere(restaurantId, from, to, "createdAt");
   where.isCancelled = false;
   where.status = "PAID";
@@ -564,7 +565,8 @@ const getSalesBills = async (restaurantId, from, to) => {
 };
 
 // ── DAILY REPORT ──
-const getDailyReport = async (restaurantId, date) => {
+const getDailyReport = async (restaurantId, date, db) => {
+    const prisma = db || platformPrisma;
   // Date-only strings are business-local (Asia/Kolkata) — same rule as dateWhere.
   const reportDate = date && DATE_ONLY.test(String(date))
     ? toDateFilterValue(date, false)

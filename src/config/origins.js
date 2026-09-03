@@ -2,7 +2,8 @@
  * Single source of truth for allowed browser origins (HTTP CORS + Socket.IO).
  *
  * Development defaults cover the Vite/React dev servers. In production the
- * ALLOWED_ORIGINS env var (comma-separated) is required — see .env.example.
+ * CORS_ORIGINS env var (comma-separated) is required — see .env.example.
+ * Falls back to ALLOWED_ORIGINS for backward compatibility.
  */
 const DEV_ORIGINS = [
   "http://localhost:3000",
@@ -16,13 +17,24 @@ const DEV_ORIGINS = [
 let cached = null;
 
 function getAllowedOrigins() {
-  const env = (process.env.ALLOWED_ORIGINS || "").trim();
-  if (!env) return DEV_ORIGINS;
   if (cached) return cached;
-  cached = env
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  // Support CORS_ORIGINS (preferred) or ALLOWED_ORIGINS (backward compat)
+  const env = (process.env.CORS_ORIGINS || process.env.ALLOWED_ORIGINS || "").trim();
+  const frontendUrl = (process.env.FRONTEND_URL || "").trim();
+
+  if (!env && !frontendUrl) {
+    cached = DEV_ORIGINS;
+  } else {
+    const parts = [];
+    if (env) {
+      parts.push(...env.split(",").map((s) => s.trim()).filter(Boolean));
+    }
+    if (frontendUrl) {
+      parts.push(frontendUrl);
+    }
+    // Merge with dev origins so development always works
+    cached = [...new Set([...DEV_ORIGINS, ...parts])];
+  }
   return cached;
 }
 
@@ -34,7 +46,11 @@ function getAllowedOrigins() {
  */
 function isOriginAllowed(origin) {
   if (!origin) return true;
-  return getAllowedOrigins().includes(origin);
+  const allowed = getAllowedOrigins().includes(origin);
+  if (!allowed && process.env.NODE_ENV !== 'production') {
+    console.warn(`⚠ CORS blocked origin: ${origin}`);
+  }
+  return allowed;
 }
 
 module.exports = { getAllowedOrigins, isOriginAllowed };
