@@ -249,6 +249,46 @@ async function getTenantTableColumns(schemaName, tableName) {
 }
 
 /**
+ * Get enum-typed columns for a table in a given schema.
+ *
+ * PostgreSQL enums in public and tenant schemas are distinct types,
+ * so INSERT ... SELECT must cast public enum values to the tenant enum
+ * via ::text::<tenant_enum>.
+ */
+async function getEnumColumns(schemaName, tableName) {
+  const rows = await platformPrisma.$queryRawUnsafe(
+    `
+      SELECT
+        c.column_name,
+        c.udt_schema,
+        c.udt_name
+      FROM information_schema.columns c
+      JOIN pg_namespace n
+        ON n.nspname = c.udt_schema
+      JOIN pg_type t
+        ON t.typnamespace = n.oid
+       AND t.typname = c.udt_name
+      WHERE c.table_schema = $1
+        AND c.table_name = $2
+        AND t.typtype = 'e'
+      ORDER BY c.ordinal_position
+    `,
+    schemaName,
+    tableName
+  );
+
+  return new Map(
+    rows.map((row) => [
+      row.column_name,
+      {
+        schema: row.udt_schema,
+        type: row.udt_name,
+      },
+    ])
+  );
+}
+
+/**
  * Get number of rows for restaurant.
  */
 async function getPublicCount(
@@ -375,6 +415,9 @@ async function copyTable({
     targetColumnSet.has(column)
   );
 
+  const targetEnumColumns = await getEnumColumns(schemaName, tableName);
+  const sourceEnumColumns = await getEnumColumns("public", tableName);
+
   if (!columns.includes("id")) {
     throw new Error(
       `Table ${tableName}: id column missing from migration columns`
@@ -387,6 +430,23 @@ async function copyTable({
 
   const quotedColumns = columns
     .map(quoteIdentifier)
+    .join(", ");
+
+  const selectExpressions = columns
+    .map((column) => {
+      const sourceEnum = sourceEnumColumns.get(column);
+      const targetEnum = targetEnumColumns.get(column);
+
+      if (sourceEnum && targetEnum) {
+        return `${quoteIdentifier(
+          column
+        )}::text::${quoteIdentifier(schemaName)}.${quoteIdentifier(
+          targetEnum.type
+        )}`;
+      }
+
+      return quoteIdentifier(column);
+    })
     .join(", ");
 
   const sourceWhere = whereClause
@@ -429,7 +489,7 @@ async function copyTable({
     INSERT INTO ${tenantTable(schemaName, tableName)}
       (${quotedColumns})
     SELECT
-      ${quotedColumns}
+      ${selectExpressions}
     FROM public.${quoteIdentifier(tableName)}
     ${sourceWhere}
     ON CONFLICT ("id") DO UPDATE SET
