@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS "User" (
   "lastLogin" TIMESTAMP,
   "passwordChangedAt" TIMESTAMP,
   "deletedAt" TIMESTAMP,
+  "restaurantId" INTEGER,
   "createdAt" TIMESTAMP DEFAULT NOW(),
   "updatedAt" TIMESTAMP DEFAULT NOW(),
   UNIQUE(email)
@@ -34,7 +35,8 @@ CREATE TABLE IF NOT EXISTS "User" (
 const USER_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_user_role ON "User"("role")`,
   `CREATE INDEX IF NOT EXISTS idx_user_active ON "User"("isActive")`,
-  `CREATE INDEX IF NOT EXISTS idx_user_email ON "User"("email")`
+  `CREATE INDEX IF NOT EXISTS idx_user_email ON "User"("email")`,
+  `CREATE INDEX IF NOT EXISTS idx_user_restaurant ON "User"("restaurantId")`
 ];
 
 async function main() {

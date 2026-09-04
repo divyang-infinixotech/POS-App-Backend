@@ -486,6 +486,9 @@ var adminCreateUser = async function(data, userId, ipAddress, userAgent) {
         email: email,
         password: hashedPassword,
         role: role,
+        // restaurantId is REQUIRED on tenant User rows (auth resolves the
+        // tenant context from it). Never leave it NULL for newly created staff.
+        restaurantId: Number(restaurantId),
         phone: phone || null,
         avatar: avatar || null,
         isActive: isActive

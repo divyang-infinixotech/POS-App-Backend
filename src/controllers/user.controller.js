@@ -6,6 +6,29 @@ function isTenantStaff(req) {
   return req.user.role !== "SUPER_ADMIN" && req.user.role !== "ADMIN" && req.user.restaurantId;
 }
 
+/**
+ * Roles that may live inside a TENANT "User" table.
+ * Platform accounts (SUPER_ADMIN/ADMIN) belong in public.User only — writing
+ * them into a tenant schema would produce a user that can never authenticate.
+ */
+const TENANT_STAFF_ROLES = ["MANAGER", "CASHIER", "KITCHEN", "WAITER"];
+
+/**
+ * The restaurant a user write targets when `db` is a tenant-schema client.
+ * - Tenant staff / ADMIN are always bound to their own authenticated restaurant.
+ * - SUPER_ADMIN explicitly selects the restaurant (via body/query) — the id is
+ *   only used to scope the write, it can never widen the caller's powers.
+ * Returns null when the target is the public platform store.
+ */
+function resolveTenantTargetRestaurantId(req, db) {
+  if (!db || db === platformPrisma) return null;
+  if (req.user.role === "SUPER_ADMIN") {
+    const id = Number(req.body.restaurantId || req.query.restaurantId);
+    return Number.isInteger(id) && id > 0 ? id : null;
+  }
+  return req.user.restaurantId || null;
+}
+
 async function resolveUserDb(req) {
   if (req.user.role === "SUPER_ADMIN" && req.body.restaurantId) {
     const { getTenantClientByRestaurantId } = require("../config/tenantPrisma");
@@ -29,10 +52,31 @@ const createUser = async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
     const db = await resolveUserDb(req);
+
+    // Tenant user writes are always bound to the authenticated restaurant
+    // (or, for SUPER_ADMIN, the restaurant selected via restaurantId, which
+    // getTenantClientByRestaurantId already validated). The client can never
+    // pick a tenant for restaurant-staff/ADMIN callers.
+    const restaurantId = resolveTenantTargetRestaurantId(req, db);
+    const targetingTenant = restaurantId !== null && db !== platformPrisma;
+
+    if (targetingTenant) {
+      if (!TENANT_STAFF_ROLES.includes(role)) {
+        return res.status(400).json({
+          success: false,
+          message: "Only MANAGER, CASHIER, KITCHEN or WAITER staff can be created for a restaurant.",
+        });
+      }
+    }
+
     const exists = await db.user.findUnique({ where: { email } });
     if (exists) return res.status(400).json({ success: false, message: "Email already exists" });
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await db.user.create({ data: { name, email, password: hashedPassword, role } });
+    const data = { name, email, password: hashedPassword, role };
+    // restaurantId is REQUIRED on tenant User rows (auth resolves the tenant
+    // context from it). Never leave it NULL for newly created staff.
+    if (targetingTenant) data.restaurantId = restaurantId;
+    const user = await db.user.create({ data });
     try {
       await createNotification(db, { userId: req.user.id, title: "New User Created", message: user.name + " (" + user.role + ") has been created.", type: "SUCCESS" });
     } catch (notifErr) { console.error("[User] Notification failed (non-critical):", notifErr.message); }
@@ -104,7 +148,22 @@ const updateUser = async (req, res) => {
     const db = await resolveUserDb(req);
     const existingUser = await db.user.findFirst({ where: { id: Number(req.params.id) }, select: { id: true } });
     if (!existingUser) return res.status(404).json({ success: false, message: "User not found" });
-    const user = await db.user.update({ where: { id: Number(req.params.id) }, data: { name, email, phone, role, avatar } });
+
+    const restaurantId = resolveTenantTargetRestaurantId(req, db);
+    const targetingTenant = restaurantId !== null && db !== platformPrisma;
+    // A role change on a tenant staff user may only select another tenant-staff
+    // role — platform roles (ADMIN/SUPER_ADMIN) live in public.User and would
+    // lock the account out if written into the tenant schema.
+    if (targetingTenant && role && !TENANT_STAFF_ROLES.includes(role)) {
+      return res.status(400).json({
+        success: false,
+        message: "Only MANAGER, CASHIER, KITCHEN or WAITER roles can be assigned to restaurant staff.",
+      });
+    }
+
+    const data = { name, email, phone, role, avatar };
+    if (targetingTenant) data.restaurantId = restaurantId;
+    const user = await db.user.update({ where: { id: Number(req.params.id) }, data });
     res.status(200).json({ success: true, message: "User updated successfully", user });
   } catch (error) { console.error(error); return errorResponse(res, error.message); }
 };

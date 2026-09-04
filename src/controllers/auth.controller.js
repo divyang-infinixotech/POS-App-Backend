@@ -23,25 +23,53 @@ const login = async (req, res) => {
       // Found in public — ADMIN or SUPER_ADMIN
       resolvedRestaurantId = user.restaurantId || null;
     } else {
-      // Not in public — search tenant schemas for staff login
+      // Not in public — search tenant schemas for staff login.
+      // The PostgreSQL schema itself is the tenant boundary, so an email found
+      // in restaurant_2's "User" table belongs to restaurant 2 even if the row's
+      // restaurantId column disagrees. Every candidate whose restaurantId column
+      // is populated must match the schema it was found in; a mismatched row is
+      // data corruption and is never used to log in.
       try {
         const { getTenantClient } = require("../config/tenantPrisma");
         const activeRestaurants = await prisma.restaurant.findMany({
           where: { status: "ACTIVE", deletedAt: null, tenantSchema: { not: null } },
           select: { id: true, tenantSchema: true }
         });
+        const candidates = [];
         for (const r of activeRestaurants) {
           try {
             const client = getTenantClient(r.tenantSchema);
             const tenantUser = await client.user.findUnique({ where: { email } });
-            if (tenantUser) {
-              user = tenantUser;
-              isTenantUser = true;
-              tenantDb = client;
-              resolvedRestaurantId = r.id;
-              break;
+            if (!tenantUser) continue;
+            // The row must agree with the schema it lives in. A NULL
+            // restaurantId is tolerated only for legacy rows (treated as "the
+            // schema is authoritative") — it is backfilled by the migration.
+            if (tenantUser.restaurantId != null && Number(tenantUser.restaurantId) !== Number(r.id)) {
+              console.warn(
+                `[Login] Skipping ${email}: restaurant_${r.id} row has restaurantId=${tenantUser.restaurantId}`
+              );
+              continue;
             }
+            candidates.push({ client, user: tenantUser, restaurantId: r.id });
           } catch (schemaErr) { /* skip */ }
+        }
+
+        if (candidates.length === 1) {
+          const hit = candidates[0];
+          user = hit.user;
+          isTenantUser = true;
+          tenantDb = hit.client;
+          resolvedRestaurantId = hit.restaurantId;
+        } else if (candidates.length > 1) {
+          // The same staff email exists in more than one ACTIVE restaurant.
+          // Picking the first match could authenticate into the WRONG tenant,
+          // so the login is refused and an operator must disambiguate.
+          console.warn(
+            `[Login] Ambiguous tenant email ${email} — accounts found in ${candidates
+              .map((c) => "restaurant_" + c.restaurantId)
+              .join(", ")}. Login refused.`
+          );
+          return res.status(401).json({ success: false, message: "Invalid Credentials" });
         }
       } catch (err) {
         console.warn("[Login] Tenant search failed:", err.message);

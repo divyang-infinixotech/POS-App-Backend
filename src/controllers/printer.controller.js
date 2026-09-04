@@ -23,7 +23,7 @@ const saveSettings = async (req, res) => {
 
         const printer =
 
-            await savePrinterSettings(req.user.restaurantId, req.body);
+            await savePrinterSettings(req.user.restaurantId, req.body, req.tenantDb || null);
 
         return successResponse(
 
@@ -57,7 +57,7 @@ const getSettings = async (req, res) => {
 
         const printer =
 
-            await getPrinterSettings(req.user.restaurantId);
+            await getPrinterSettings(req.user.restaurantId, req.tenantDb || null);
 
         return successResponse(
 
@@ -93,7 +93,8 @@ const printBill = async (req, res) => {
 
             await getBillPrintData(
                 req.user.restaurantId,
-                req.params.id
+                req.params.id,
+                req.tenantDb || null
 
             );
 
@@ -129,7 +130,8 @@ const printKOT = async (req, res) => {
 
         const data = await getKOTPrintData(
             req.user.restaurantId,
-            req.params.id
+            req.params.id,
+            req.tenantDb || null
 
         );
 
@@ -164,7 +166,8 @@ const printReprint = async (req, res) => {
 
         const data = await reprintBill(
             req.user.restaurantId,
-            req.params.id
+            req.params.id,
+            req.tenantDb || null
 
         );
 

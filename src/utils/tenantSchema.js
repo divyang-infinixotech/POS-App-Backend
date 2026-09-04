@@ -173,7 +173,10 @@ END $$;
  */
 const TENANT_TABLES_SQL = `
 -- Tenant Staff Users (operational staff: MANAGER, CASHIER, KITCHEN, WAITER)
--- The tenant schema itself identifies the restaurant — no restaurantId FK needed.
+-- The PostgreSQL schema itself identifies the restaurant. restaurantId is kept
+-- (denormalized, same value as the owning Restaurant.id) so Prisma's User model
+-- works unchanged and auth can cross-check "the row in schema X belongs to
+-- restaurant X". It is always populated by the user-creation flow.
 CREATE TABLE IF NOT EXISTS "User" (
   id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
@@ -186,6 +189,7 @@ CREATE TABLE IF NOT EXISTS "User" (
   "lastLogin" TIMESTAMP,
   "passwordChangedAt" TIMESTAMP,
   "deletedAt" TIMESTAMP,
+  "restaurantId" INTEGER,
   "createdAt" TIMESTAMP DEFAULT NOW(),
   "updatedAt" TIMESTAMP DEFAULT NOW(),
   UNIQUE(email)
@@ -388,6 +392,7 @@ CREATE TABLE IF NOT EXISTS "Order" (
 CREATE TABLE IF NOT EXISTS "OrderItem" (
   id SERIAL PRIMARY KEY,
   quantity INTEGER NOT NULL,
+  "sentQuantity" INTEGER DEFAULT 0,
   price DOUBLE PRECISION NOT NULL,
   tax DOUBLE PRECISION NOT NULL,
   total DOUBLE PRECISION NOT NULL,
@@ -432,6 +437,19 @@ CREATE TABLE IF NOT EXISTS "KOT" (
   "createdAt" TIMESTAMP DEFAULT NOW(),
   "updatedAt" TIMESTAMP DEFAULT NOW(),
   UNIQUE("restaurantId", "kotNo")
+);
+
+-- KOT Items
+-- Records the quantity of each OrderItem included in a specific KOT.
+CREATE TABLE IF NOT EXISTS "KOTItem" (
+  id SERIAL PRIMARY KEY,
+  "kotId" INTEGER NOT NULL,
+  "orderItemId" INTEGER NOT NULL,
+  "menuItemId" INTEGER NOT NULL,
+  quantity INTEGER NOT NULL,
+  price DOUBLE PRECISION NOT NULL,
+  notes TEXT,
+  "createdAt" TIMESTAMP DEFAULT NOW()
 );
 
 -- Bills
@@ -604,6 +622,11 @@ CREATE INDEX IF NOT EXISTS idx_kot_restaurant ON "KOT"("restaurantId");
 CREATE INDEX IF NOT EXISTS idx_kot_status ON "KOT"(status);
 CREATE INDEX IF NOT EXISTS idx_kot_order ON "KOT"("orderId");
 CREATE INDEX IF NOT EXISTS idx_kot_created ON "KOT"("createdAt");
+CREATE INDEX IF NOT EXISTS idx_kotitem_kot ON "KOTItem"("kotId");
+CREATE INDEX IF NOT EXISTS idx_kotitem_orderitem ON "KOTItem"("orderItemId");
+CREATE INDEX IF NOT EXISTS idx_kotitem_kot_orderitem
+  ON "KOTItem"("kotId", "orderItemId");
+CREATE INDEX IF NOT EXISTS idx_kotitem_menu ON "KOTItem"("menuItemId");
 CREATE INDEX IF NOT EXISTS idx_bill_restaurant ON "Bill"("restaurantId");
 CREATE INDEX IF NOT EXISTS idx_bill_status ON "Bill"(status);
 CREATE INDEX IF NOT EXISTS idx_bill_payment ON "Bill"("paymentStatus");
@@ -631,6 +654,7 @@ CREATE INDEX IF NOT EXISTS idx_notif_priority ON "Notification"(priority);
 CREATE INDEX IF NOT EXISTS idx_user_role ON "User"("role");
 CREATE INDEX IF NOT EXISTS idx_user_active ON "User"("isActive");
 CREATE INDEX IF NOT EXISTS idx_user_email ON "User"(email);
+CREATE INDEX IF NOT EXISTS idx_user_restaurant ON "User"("restaurantId");
 CREATE INDEX IF NOT EXISTS idx_setting_restaurant ON "RestaurantSetting"("restaurantId");
 CREATE INDEX IF NOT EXISTS idx_mergegroup_restaurant ON "MergeGroup"("restaurantId");
 CREATE INDEX IF NOT EXISTS idx_mergegroup_order ON "MergeGroup"("primaryOrderId");
@@ -651,91 +675,127 @@ DO $$
 BEGIN
   -- Floor FK is handled by unique constraint already
   -- RestaurantTable.floorId → Floor.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'RestaurantTable_floorId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'RestaurantTable_floorId_fkey'
+  AND conrelid = '"RestaurantTable"'::regclass) THEN
     ALTER TABLE "RestaurantTable" ADD CONSTRAINT "RestaurantTable_floorId_fkey"
       FOREIGN KEY ("floorId") REFERENCES "Floor"(id) ON DELETE SET NULL ON UPDATE CASCADE;
   END IF;
 
   -- MenuItem.categoryId → Category.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MenuItem_categoryId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MenuItem_categoryId_fkey'
+  AND conrelid = '"MenuItem"'::regclass) THEN
     ALTER TABLE "MenuItem" ADD CONSTRAINT "MenuItem_categoryId_fkey"
       FOREIGN KEY ("categoryId") REFERENCES "Category"(id) ON DELETE RESTRICT ON UPDATE CASCADE;
   END IF;
 
   -- Order.tableId → RestaurantTable.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Order_tableId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Order_tableId_fkey'
+  AND conrelid = '"Order"'::regclass) THEN
     ALTER TABLE "Order" ADD CONSTRAINT "Order_tableId_fkey"
       FOREIGN KEY ("tableId") REFERENCES "RestaurantTable"(id) ON DELETE SET NULL ON UPDATE CASCADE;
   END IF;
 
   -- Order.customerId → Customer.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Order_customerId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Order_customerId_fkey'
+  AND conrelid = '"Order"'::regclass) THEN
     ALTER TABLE "Order" ADD CONSTRAINT "Order_customerId_fkey"
       FOREIGN KEY ("customerId") REFERENCES "Customer"(id) ON DELETE SET NULL ON UPDATE CASCADE;
   END IF;
 
   -- OrderItem.orderId → Order.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'OrderItem_orderId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'OrderItem_orderId_fkey'
+  AND conrelid = '"OrderItem"'::regclass) THEN
     ALTER TABLE "OrderItem" ADD CONSTRAINT "OrderItem_orderId_fkey"
       FOREIGN KEY ("orderId") REFERENCES "Order"(id) ON DELETE RESTRICT ON UPDATE CASCADE;
   END IF;
 
   -- OrderItem.menuItemId → MenuItem.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'OrderItem_menuItemId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'OrderItem_menuItemId_fkey'
+  AND conrelid = '"OrderItem"'::regclass) THEN
     ALTER TABLE "OrderItem" ADD CONSTRAINT "OrderItem_menuItemId_fkey"
       FOREIGN KEY ("menuItemId") REFERENCES "MenuItem"(id) ON DELETE RESTRICT ON UPDATE CASCADE;
   END IF;
 
   -- StockMovement.menuItemId → MenuItem.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'StockMovement_menuItemId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'StockMovement_menuItemId_fkey'
+  AND conrelid = '"StockMovement"'::regclass) THEN
     ALTER TABLE "StockMovement" ADD CONSTRAINT "StockMovement_menuItemId_fkey"
       FOREIGN KEY ("menuItemId") REFERENCES "MenuItem"(id) ON DELETE RESTRICT ON UPDATE CASCADE;
   END IF;
 
   -- StockMovement.orderId → Order.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'StockMovement_orderId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'StockMovement_orderId_fkey'
+  AND conrelid = '"StockMovement"'::regclass) THEN
     ALTER TABLE "StockMovement" ADD CONSTRAINT "StockMovement_orderId_fkey"
       FOREIGN KEY ("orderId") REFERENCES "Order"(id) ON DELETE SET NULL ON UPDATE CASCADE;
   END IF;
 
   -- KOT.orderId → Order.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'KOT_orderId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'KOT_orderId_fkey'
+  AND conrelid = '"KOT"'::regclass) THEN
     ALTER TABLE "KOT" ADD CONSTRAINT "KOT_orderId_fkey"
       FOREIGN KEY ("orderId") REFERENCES "Order"(id) ON DELETE RESTRICT ON UPDATE CASCADE;
   END IF;
 
+    -- KOTItem.kotId → KOT.id
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'KOTItem_kotId_fkey'
+  AND conrelid = '"KOTItem"'::regclass) THEN
+    ALTER TABLE "KOTItem" ADD CONSTRAINT "KOTItem_kotId_fkey"
+      FOREIGN KEY ("kotId") REFERENCES "KOT"(id) ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+
+  -- KOTItem.orderItemId → OrderItem.id
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'KOTItem_orderItemId_fkey'
+  AND conrelid = '"KOTItem"'::regclass) THEN
+    ALTER TABLE "KOTItem" ADD CONSTRAINT "KOTItem_orderItemId_fkey"
+      FOREIGN KEY ("orderItemId") REFERENCES "OrderItem"(id) ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+
+  -- KOTItem.menuItemId → MenuItem.id
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'KOTItem_menuItemId_fkey'
+  AND conrelid = '"KOTItem"'::regclass) THEN
+    ALTER TABLE "KOTItem" ADD CONSTRAINT "KOTItem_menuItemId_fkey"
+      FOREIGN KEY ("menuItemId") REFERENCES "MenuItem"(id) ON DELETE RESTRICT ON UPDATE CASCADE;
+  END IF;
+
   -- Bill.orderId → Order.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Bill_orderId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Bill_orderId_fkey'
+  AND conrelid = '"Bill"'::regclass) THEN
     ALTER TABLE "Bill" ADD CONSTRAINT "Bill_orderId_fkey"
       FOREIGN KEY ("orderId") REFERENCES "Order"(id) ON DELETE RESTRICT ON UPDATE CASCADE;
   END IF;
 
   -- Payment.billId → Bill.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Payment_billId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Payment_billId_fkey'
+  AND conrelid = '"Payment"'::regclass) THEN
     ALTER TABLE "Payment" ADD CONSTRAINT "Payment_billId_fkey"
       FOREIGN KEY ("billId") REFERENCES "Bill"(id) ON DELETE RESTRICT ON UPDATE CASCADE;
   END IF;
 
   -- MergeGroup.primaryOrderId → Order.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MergeGroup_primaryOrderId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MergeGroup_primaryOrderId_fkey'
+  AND conrelid = '"MergeGroup"'::regclass) THEN
     ALTER TABLE "MergeGroup" ADD CONSTRAINT "MergeGroup_primaryOrderId_fkey"
       FOREIGN KEY ("primaryOrderId") REFERENCES "Order"(id) ON DELETE RESTRICT ON UPDATE CASCADE;
   END IF;
 
   -- MergeGroupTable.mergeGroupId → MergeGroup.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MergeGroupTable_mergeGroupId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MergeGroupTable_mergeGroupId_fkey'
+  AND conrelid = '"MergeGroupTable"'::regclass) THEN
     ALTER TABLE "MergeGroupTable" ADD CONSTRAINT "MergeGroupTable_mergeGroupId_fkey"
       FOREIGN KEY ("mergeGroupId") REFERENCES "MergeGroup"(id) ON DELETE CASCADE ON UPDATE CASCADE;
   END IF;
 
   -- MergeGroupTable.tableId → RestaurantTable.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MergeGroupTable_tableId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MergeGroupTable_tableId_fkey'
+  AND conrelid = '"MergeGroupTable"'::regclass) THEN
     ALTER TABLE "MergeGroupTable" ADD CONSTRAINT "MergeGroupTable_tableId_fkey"
       FOREIGN KEY ("tableId") REFERENCES "RestaurantTable"(id) ON DELETE RESTRICT ON UPDATE CASCADE;
   END IF;
 
   -- MergeGroupTable.originalOrderId → Order.id
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MergeGroupTable_originalOrderId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MergeGroupTable_originalOrderId_fkey'
+  AND conrelid = '"MergeGroupTable"'::regclass) THEN
     ALTER TABLE "MergeGroupTable" ADD CONSTRAINT "MergeGroupTable_originalOrderId_fkey"
       FOREIGN KEY ("originalOrderId") REFERENCES "Order"(id) ON DELETE RESTRICT ON UPDATE CASCADE;
   END IF;
