@@ -201,6 +201,14 @@ function tenantTable(schema, table) {
 }
 
 /**
+ * Replace the tenant-schema placeholder used inside targetWhere
+ * clauses with the concrete tenant schema name.
+ */
+function resolveTenantWhere(schemaName, whereClause) {
+  return whereClause.replace(/restaurant_SCHEMA/g, schemaName);
+}
+
+/**
  * Get columns from public table.
  *
  * This prevents accidentally copying a column that doesn't exist
@@ -243,12 +251,16 @@ async function getTenantTableColumns(schemaName, tableName) {
 /**
  * Get number of rows for restaurant.
  */
-async function getPublicCount(tableName, restaurantId) {
+async function getPublicCount(
+  tableName,
+  restaurantId,
+  whereClause = `"restaurantId" = $1`
+) {
   const result = await platformPrisma.$queryRawUnsafe(
     `
       SELECT COUNT(*)::integer AS count
       FROM public.${quoteIdentifier(tableName)}
-      WHERE "restaurantId" = $1
+      WHERE ${whereClause}
     `,
     restaurantId
   );
@@ -259,12 +271,17 @@ async function getPublicCount(tableName, restaurantId) {
 /**
  * Get number of rows in tenant.
  */
-async function getTenantCount(schemaName, tableName, restaurantId) {
+async function getTenantCount(
+  schemaName,
+  tableName,
+  restaurantId,
+  whereClause = `"restaurantId" = $1`
+) {
   const result = await platformPrisma.$queryRawUnsafe(
     `
       SELECT COUNT(*)::integer AS count
       FROM ${tenantTable(schemaName, tableName)}
-      WHERE "restaurantId" = $1
+      WHERE ${resolveTenantWhere(schemaName, whereClause)}
     `,
     restaurantId
   );
@@ -322,6 +339,7 @@ async function copyTable({
   schemaName,
   tableName,
   whereClause,
+  targetWhere = `"restaurantId" = $1`,
   whereParams = [],
 }) {
   const sourceExists = await publicTableExists(tableName);
@@ -439,7 +457,8 @@ async function copyTable({
   const targetCount = await getTenantCount(
     schemaName,
     tableName,
-    restaurantId
+    restaurantId,
+    targetWhere
   );
 
   console.log(
@@ -634,7 +653,9 @@ async function verifyMigration(restaurantId, schemaName) {
 
   const results = [];
 
-  for (const tableName of MIGRATION_TABLES) {
+  for (const table of MIGRATION_TABLES) {
+    const tableName = table.tableName;
+
     if (!(await publicTableExists(tableName))) {
       continue;
     }
@@ -680,13 +701,15 @@ async function verifyMigration(restaurantId, schemaName) {
 
     const sourceCount = await getPublicCount(
       tableName,
-      restaurantId
+      restaurantId,
+      table.sourceWhere
     );
 
     const targetCount = await getTenantCount(
       schemaName,
       tableName,
-      restaurantId
+      restaurantId,
+      table.targetWhere
     );
 
     results.push({
@@ -734,7 +757,9 @@ async function migrateRestaurant(restaurantId) {
       `\n[DRY-RUN] Migration plan for ${schemaName}:`
     );
 
-    for (const tableName of MIGRATION_TABLES) {
+    for (const table of MIGRATION_TABLES) {
+      const tableName = table.tableName;
+
       if (!(await publicTableExists(tableName))) {
         console.log(`  ${tableName}: SKIP - source table missing`);
         continue;
@@ -759,7 +784,8 @@ async function migrateRestaurant(restaurantId) {
 
       const count = await getPublicCount(
         tableName,
-        restaurantId
+        restaurantId,
+        table.sourceWhere
       );
 
       console.log(
@@ -777,7 +803,9 @@ async function migrateRestaurant(restaurantId) {
   /**
    * All tables except User.
    */
-  for (const tableName of MIGRATION_TABLES) {
+  for (const table of MIGRATION_TABLES) {
+    const tableName = table.tableName;
+
     if (tableName === "User") {
       continue;
     }
@@ -786,7 +814,8 @@ async function migrateRestaurant(restaurantId) {
       restaurantId,
       schemaName,
       tableName,
-      whereClause: `"restaurantId" = $1`,
+      whereClause: table.sourceWhere,
+      targetWhere: table.targetWhere,
       whereParams: [restaurantId],
     });
   }
