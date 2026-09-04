@@ -25,13 +25,15 @@ const {
   generateUPIQrData,
   verifyUPIPayment,
 } = require("../controllers/payment.controller");
+const { BILLING_ROLES } = require("../utils/billing-roles");
 
 // ─── Collect Payment (Combined: Create Bill + Process Payments + Complete Order) ───
-// Payments are part of the core POS checkout flow — granted by either billing or pos
+// Payments are part of the core POS checkout flow — granted by either billing or pos.
+// Billing-capable roles only (ADMIN / MANAGER / CASHIER) — KITCHEN and WAITER are rejected.
 router.post(
   "/collect",
   protect,
-  authorize("ADMIN", "MANAGER", "CASHIER", "WAITER"),
+  authorize(...BILLING_ROLES),
   requireFeature(["billing", "pos"]),
   validate(collectPaymentSchema),
   audit("PAYMENT", "CREATE", (req) =>
@@ -44,6 +46,7 @@ router.post(
 router.post(
   "/",
   protect,
+  authorize(...BILLING_ROLES),
   requireFeature(["billing", "pos"]),
   validate(createPaymentSchema),
   audit("PAYMENT", "CREATE", (req) =>
@@ -56,6 +59,7 @@ router.post(
 router.post(
   "/partial",
   protect,
+  authorize(...BILLING_ROLES),
   requireFeature(["billing", "pos"]),
   validate(partialPaymentSchema),
   audit("PAYMENT", "CREATE", (req) =>
@@ -68,6 +72,7 @@ router.post(
 router.post(
   "/split",
   protect,
+  authorize(...BILLING_ROLES),
   requireFeature(["billing", "pos"]),
   validate(splitPaymentSchema),
   audit("PAYMENT", "CREATE", (req) =>
@@ -77,9 +82,12 @@ router.post(
 );
 
 // ─── List Payments ───
+// Reading payment records is part of the billing workflow — restricted to
+// billing-capable roles (ADMIN/MANAGER/CASHIER). KITCHEN and WAITER are denied.
 router.get(
   "/",
   protect,
+  authorize(...BILLING_ROLES),
   requireFeature(["billing", "pos"]),
   getPayments
 );
@@ -88,6 +96,7 @@ router.get(
 router.post(
   "/:id/reprint",
   protect,
+  authorize(...BILLING_ROLES),
   requireFeature(["billing", "pos"]),
   audit("PAYMENT", "REPRINT", (req) => `Reprinted receipt for Bill ${req.params.id}`),
   reprintReceipt
@@ -97,6 +106,7 @@ router.post(
 router.post(
   "/:id/print",
   protect,
+  authorize(...BILLING_ROLES),
   requireFeature(["billing", "pos"]),
   markPrinted
 );
@@ -105,6 +115,7 @@ router.post(
 router.post(
   "/:id/email",
   protect,
+  authorize(...BILLING_ROLES),
   requireFeature(["billing", "pos"]),
   emailReceipt
 );
@@ -113,7 +124,7 @@ router.post(
 router.post(
   "/upi-qr",
   protect,
-  authorize("ADMIN", "MANAGER", "CASHIER", "WAITER"),
+  authorize(...BILLING_ROLES),
   requireFeature(["billing", "pos"]),
   generateUPIQrData
 );
@@ -122,7 +133,7 @@ router.post(
 router.post(
   "/verify-upi",
   protect,
-  authorize("ADMIN", "MANAGER", "CASHIER", "WAITER"),
+  authorize(...BILLING_ROLES),
   requireFeature(["billing", "pos"]),
   verifyUPIPayment
 );

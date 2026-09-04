@@ -55,25 +55,35 @@ router.post(
     createOrder
 );
 
+// Order listing powers the Active Orders board (and its Hold/Completed/Cancelled
+// tabs). KITCHEN is deliberately excluded — kitchen staff only access Kitchen
+// Tickets (GET /api/kots), never the order board. WAITER keeps its access.
 router.get(
     "/",
     protect,
+    authorize("ADMIN", "MANAGER", "CASHIER", "WAITER"),
     requireFeature(["active_orders", "pos"]),
     getOrders
 );
 
 // Shared by the Active Orders screen (active_orders) and the Kitchen screen (kitchen)
+// KITCHEN is deliberately excluded — kitchen staff only access Kitchen Tickets (GET /api/kots),
+// never the Active Orders board. WAITER keeps its existing access.
 router.get(
     "/active",
     protect,
-    authorize("ADMIN", "MANAGER", "CASHIER", "KITCHEN", "WAITER"),
+    authorize("ADMIN", "MANAGER", "CASHIER", "WAITER"),
     requireFeature(["active_orders", "kitchen"]),
     getActiveOrders
 );
 
+// Single-order view is used by Active Orders, the POS checkout overlay, and the
+// order-taking wizard — never by the Kitchen screen (KOTs embed the order data
+// the kitchen needs). KITCHEN is denied so it cannot pull full order/bill data.
 router.get(
     "/:id",
     protect,
+    authorize("ADMIN", "MANAGER", "CASHIER", "WAITER"),
     requireFeature(["pos", "active_orders", "kitchen"]),
     getOrderById
 );

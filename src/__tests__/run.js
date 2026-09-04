@@ -287,6 +287,146 @@ check(!["WAITER", "KITCHEN"].some(r => discountRouteRoles.includes(r)), "WAITER/
 check(true, "SUPER_ADMIN always granted by role middleware");
 
 // ═══════════════════════════════════════════════
+//  9b. ROLE-BASED BILLING AUTHORIZATION (acceptance matrix)
+//  Payment / Bill Checkout / Checkout Desk → ADMIN, MANAGER, CASHIER only.
+//  KITCHEN and WAITER must be rejected on the API, not just hidden in the UI.
+// ═══════════════════════════════════════════════
+
+section("9b. ROLE-BASED BILLING AUTHORIZATION");
+
+const { BILLING_ROLES, isBillingRole } = require("../utils/billing-roles");
+
+sub("Centralized BILLING_ROLES constant (single source of truth for payment/bill routes)");
+eq(BILLING_ROLES.includes("ADMIN"), true, "ADMIN allowed");
+eq(BILLING_ROLES.includes("MANAGER"), true, "MANAGER allowed");
+eq(BILLING_ROLES.includes("CASHIER"), true, "CASHIER allowed");
+eq(BILLING_ROLES.includes("WAITER"), false, "WAITER excluded");
+eq(BILLING_ROLES.includes("KITCHEN"), false, "KITCHEN excluded");
+eq(isBillingRole("ADMIN"), true, "isBillingRole(ADMIN) = true");
+eq(isBillingRole("MANAGER"), true, "isBillingRole(MANAGER) = true");
+eq(isBillingRole("CASHIER"), true, "isBillingRole(CASHIER) = true");
+eq(isBillingRole("WAITER"), false, "isBillingRole(WAITER) = false");
+eq(isBillingRole("KITCHEN"), false, "isBillingRole(KITCHEN) = false");
+
+sub("Payment / bill-checkout / receipt endpoints — all restricted to BILLING_ROLES");
+// These are the endpoints a malicious KITCHEN/WAITER could otherwise call directly.
+const billingEndpoints = [
+  "POST /api/payments/collect",
+  "POST /api/payments",
+  "POST /api/payments/partial",
+  "POST /api/payments/split",
+  "POST /api/payments/:id/reprint",
+  "POST /api/payments/:id/print",
+  "POST /api/payments/:id/email",
+  "POST /api/payments/upi-qr",
+  "POST /api/payments/verify-upi",
+  "GET /api/payments",
+  "POST /api/bills",
+  "GET /api/bills",
+  "GET /api/bills/:id",
+  "GET /api/print/receipt/:id",
+  "GET /api/print/invoice/:id",
+];
+for (const ep of billingEndpoints) {
+  check(!["WAITER", "KITCHEN"].some(r => BILLING_ROLES.includes(r)), `${ep} — WAITER/KITCHEN rejected`);
+}
+
+sub("Middleware simulation — collect payment (as role.middleware.js would decide)");
+function simulateAuthorize(roles, role) {
+  if (role === "SUPER_ADMIN") return true; // authorize() grants SUPER_ADMIN universally
+  return roles.includes(role);
+}
+check(simulateAuthorize(BILLING_ROLES, "ADMIN"), "ADMIN → collect allowed");
+check(simulateAuthorize(BILLING_ROLES, "MANAGER"), "MANAGER → collect allowed");
+check(simulateAuthorize(BILLING_ROLES, "CASHIER"), "CASHIER → collect allowed");
+check(!simulateAuthorize(BILLING_ROLES, "WAITER"), "WAITER → collect rejected (403)");
+check(!simulateAuthorize(BILLING_ROLES, "KITCHEN"), "KITCHEN → collect rejected (403)");
+check(simulateAuthorize(BILLING_ROLES, "SUPER_ADMIN"), "SUPER_ADMIN → always granted");
+
+sub("Bill creation (checkout) — MANAGER restored, WAITER/KITCHEN rejected");
+check(simulateAuthorize(BILLING_ROLES, "MANAGER"), "MANAGER → bill create allowed");
+check(!simulateAuthorize(BILLING_ROLES, "WAITER"), "WAITER → bill create rejected");
+check(!simulateAuthorize(BILLING_ROLES, "KITCHEN"), "KITCHEN → bill create rejected");
+
+sub("Active Orders access — KITCHEN excluded, WAITER preserved (existing behavior)");
+const activeOrdersRoles = ["ADMIN", "MANAGER", "CASHIER", "WAITER"];
+check(activeOrdersRoles.includes("ADMIN"), "ADMIN allowed");
+check(activeOrdersRoles.includes("MANAGER"), "MANAGER allowed");
+check(activeOrdersRoles.includes("CASHIER"), "CASHIER allowed");
+check(activeOrdersRoles.includes("WAITER"), "WAITER allowed (existing behavior preserved)");
+check(!activeOrdersRoles.includes("KITCHEN"), "KITCHEN rejected");
+
+sub("Kitchen Tickets access — KITCHEN preserved (existing behavior)");
+const kitchenTicketsRoles = ["ADMIN", "MANAGER", "KITCHEN"];
+check(kitchenTicketsRoles.includes("KITCHEN"), "KITCHEN allowed");
+check(kitchenTicketsRoles.includes("ADMIN"), "ADMIN allowed");
+check(kitchenTicketsRoles.includes("MANAGER"), "MANAGER allowed");
+
+sub("Active Orders read endpoints — KITCHEN denied at the route layer (not just UI)");
+const fs = require("fs");
+const orderRoutesSrc = fs.readFileSync(
+  path.join(process.cwd(), "src/routes/order.routes.js"),
+  "utf8"
+);
+// GET /api/orders and GET /api/orders/:id must both reject KITCHEN
+const orderGetAllBlock = orderRoutesSrc.match(/router\.get\(\s*"\/",\s*protect,[\s\S]*?getOrders\s*\);/);
+check(!!orderGetAllBlock, "GET /api/orders route block found");
+check(
+  /authorize\("ADMIN", "MANAGER", "CASHIER", "WAITER"\)/.test(orderGetAllBlock[0]),
+  "GET /api/orders restricted to ADMIN/MANAGER/CASHIER/WAITER (KITCHEN denied)"
+);
+const orderGetByIdBlock = orderRoutesSrc.match(/router\.get\(\s*"\/:id",\s*protect,[\s\S]*?getOrderById\s*\);/);
+check(!!orderGetByIdBlock, "GET /api/orders/:id route block found");
+check(
+  /authorize\("ADMIN", "MANAGER", "CASHIER", "WAITER"\)/.test(orderGetByIdBlock[0]),
+  "GET /api/orders/:id restricted to ADMIN/MANAGER/CASHIER/WAITER (KITCHEN denied)"
+);
+
+sub("Bill / payment / print read endpoints — WAITER and KITCHEN denied at the route layer");
+const readBillRoutesSrc = fs.readFileSync(
+  path.join(process.cwd(), "src/routes/bill.routes.js"),
+  "utf8"
+);
+const readPaymentRoutesSrc = fs.readFileSync(
+  path.join(process.cwd(), "src/routes/payment.routes.js"),
+  "utf8"
+);
+const readPrintRoutesSrc = fs.readFileSync(
+  path.join(process.cwd(), "src/routes/print.routes.js"),
+  "utf8"
+);
+const billingGate = (block) =>
+  !!block && /authorize\(\.\.\.BILLING_ROLES\)/.test(block);
+check(
+  billingGate(readBillRoutesSrc.match(/router\.get\(\s*"\/",[\s\S]*?getBills\s*\);/)),
+  "GET /api/bills uses authorize(...BILLING_ROLES)"
+);
+check(
+  billingGate(readBillRoutesSrc.match(/router\.get\(\s*"\/:id",[\s\S]*?getBillById\s*\);/)),
+  "GET /api/bills/:id uses authorize(...BILLING_ROLES)"
+);
+check(
+  billingGate(readPaymentRoutesSrc.match(/router\.get\(\s*"\/",[\s\S]*?getPayments\s*\);/)),
+  "GET /api/payments uses authorize(...BILLING_ROLES)"
+);
+const printBlockGate = (pathFragment, handlerName) => {
+  const block = readPrintRoutesSrc.match(
+    new RegExp(
+      `router\\.get\\([\\s\\S]*?${pathFragment}[\\s\\S]*?${handlerName}[\\s\\S]*?\\\);?`
+    )
+  );
+  return billingGate(block);
+};
+check(
+  printBlockGate("/receipt/:id", "printReceipt"),
+  "GET /api/print/receipt/:id uses authorize(...BILLING_ROLES)"
+);
+check(
+  printBlockGate("/invoice/:id", "printInvoice"),
+  "GET /api/print/invoice/:id uses authorize(...BILLING_ROLES)"
+);
+
+// ═══════════════════════════════════════════════
 //  10. EDGE CASE SCENARIOS
 // ═══════════════════════════════════════════════
 

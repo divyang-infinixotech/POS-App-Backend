@@ -26,20 +26,25 @@ const {
     updateBillDiscount
 
 } = require("../controllers/bill.controller");
+const { BILLING_ROLES } = require("../utils/billing-roles");
 
-// Billing is part of the core POS checkout flow — granted by either billing or pos
+// Billing is part of the core POS checkout flow — granted by either billing or pos.
+// Bill creation (checkout) is restricted to billing-capable roles (ADMIN/MANAGER/CASHIER).
 router.post(
     "/",
     protect,
-    authorize("ADMIN", "CASHIER"),
+    authorize(...BILLING_ROLES),
     requireFeature(["billing", "pos"]),
     validate(createBillSchema),
     createBill
 );
 
+// Reading bills/receipts is part of the billing workflow — restricted to
+// billing-capable roles (ADMIN/MANAGER/CASHIER). KITCHEN and WAITER are denied.
 router.get(
     "/",
     protect,
+    authorize(...BILLING_ROLES),
     requireFeature(["billing", "pos"]),
     getBills
 );
@@ -47,6 +52,7 @@ router.get(
 router.get(
     "/:id",
     protect,
+    authorize(...BILLING_ROLES),
     requireFeature(["billing", "pos"]),
     getBillById
 );
