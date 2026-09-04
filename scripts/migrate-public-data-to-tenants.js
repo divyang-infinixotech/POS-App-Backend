@@ -485,7 +485,7 @@ async function resetSequence(schemaName, tableName) {
         'id'
       ) AS sequence_name
     `,
-    `${schemaName}.${tableName}`
+    tenantTable(schemaName, tableName)
   );
 
   const sequenceName = sequenceRows[0]?.sequence_name;
