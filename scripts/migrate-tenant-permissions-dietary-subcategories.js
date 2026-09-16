@@ -33,11 +33,31 @@ const { platformPrisma } = require("../src/config/tenantPrisma");
       const exec = (sql) => platformPrisma.$executeRawUnsafe(sql);
 
       // ── MenuItem: dietaryType + backfill from isVeg (no data loss) ──
-      await exec(`ALTER TABLE "${schema}"."MenuItem" ADD COLUMN IF NOT EXISTS "dietaryType" TEXT DEFAULT 'VEG'`);
+      await exec(`
+  DO $$
+  BEGIN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = '${schema}'
+        AND table_name = 'MenuItem'
+        AND column_name = 'dietaryType'
+    ) THEN
+      ALTER TABLE "${schema}"."MenuItem"
+      ADD COLUMN "dietaryType" "${schema}"."DietaryType"
+      DEFAULT 'VEG'::"${schema}"."DietaryType";
+    END IF;
+  END $$;
+`);
       const backfilled = await exec(
-        `UPDATE "${schema}"."MenuItem" SET "dietaryType" = CASE WHEN "isVeg" THEN 'VEG' ELSE 'NON_VEG' END
-         WHERE "dietaryType" IS NULL OR ("dietaryType" = 'VEG' AND "isVeg" = false)`
-      );
+  `UPDATE "${schema}"."MenuItem"
+   SET "dietaryType" = CASE
+     WHEN "isVeg" THEN 'VEG'::"${schema}"."DietaryType"
+     ELSE 'NON_VEG'::"${schema}"."DietaryType"
+   END
+   WHERE "dietaryType" IS NULL
+      OR ("dietaryType" = 'VEG'::"${schema}"."DietaryType" AND "isVeg" = false)`
+);
 
       // ── MenuItem: optional subcategory link ──
       await exec(`ALTER TABLE "${schema}"."MenuItem" ADD COLUMN IF NOT EXISTS "subcategoryId" INTEGER`);
