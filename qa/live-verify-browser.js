@@ -74,6 +74,28 @@ async function main() {
   const adminToken = la.data?.data?.token;
   check(!!adminToken, "Golden Grill ADMIN login-as token obtained");
 
+  // Pre-flight: the sidebar hides "Floors & Tables" when (a) enableFloorManagement
+  // is off, or (b) business mode is COUNTER (restaurant-only modules hidden).
+  // Fix drifted QA fixtures here and restore them in finally.
+  let floorMgmtBaseline = true;
+  let subModeBaseline = null;
+  try {
+    const before = await api("GET", "/settings", null, adminToken);
+    floorMgmtBaseline = before.data?.setting?.enableFloorManagement !== false;
+    if (!floorMgmtBaseline) {
+      await api("POST", "/settings", { restaurantName: before.data?.setting?.restaurantName || "QA Restaurant", enableFloorManagement: true }, adminToken);
+      console.log("  pre-flight: enableFloorManagement was off → enabled for this run (restored at the end)");
+    }
+    // businessMode comes from the platform Subscription row (BASIC_POS → counter).
+    // The merge/split flows need RESTAURANT mode.
+    const sub = await platformPrisma.subscription.findUnique({ where: { id: 1 } });
+    if (sub && sub.businessMode && sub.businessMode !== "RESTAURANT") {
+      subModeBaseline = sub.businessMode;
+      await platformPrisma.subscription.update({ where: { id: 1 }, data: { businessMode: "RESTAURANT" } });
+      console.log(`  pre-flight: subscription businessMode was ${subModeBaseline} → RESTAURANT for this run (restored at the end)`);
+    }
+  } catch (e) { console.log("  pre-flight settings check failed:", e.message); }
+
   const preAct = await tenantDb.order.count({ where: { isDeleted: false, status: { notIn: ["COMPLETED", "CANCELLED"] }, orderType: { not: "COUNTER_SALE" } } });
   const preOcc = await tenantDb.restaurantTable.count({ where: { status: "OCCUPIED" } });
   const tables = await tenantDb.restaurantTable.findMany({ where: { status: "AVAILABLE" }, orderBy: { tableNo: "asc" }, take: 2, select: { id: true, tableNo: true } });
@@ -289,6 +311,17 @@ async function main() {
   } finally {
     await browser.close().catch(() => {});
     await cleanup(tenantDb);
+    try {
+      if (!floorMgmtBaseline) {
+        const cur = await api("GET", "/settings", null, adminToken);
+        await api("POST", "/settings", { restaurantName: cur.data?.setting?.restaurantName || "QA Restaurant", enableFloorManagement: false }, adminToken);
+        console.log("  restored enableFloorManagement=false (pre-run state)");
+      }
+      if (subModeBaseline) {
+        await platformPrisma.subscription.update({ where: { id: 1 }, data: { businessMode: subModeBaseline } });
+        console.log(`  restored subscription businessMode=${subModeBaseline} (pre-run state)`);
+      }
+    } catch (e) { console.error("restore pre-flight state failed:", e.message); }
     const afterAct = await tenantDb.order.count({ where: { isDeleted: false, status: { notIn: ["COMPLETED", "CANCELLED"] }, orderType: { not: "COUNTER_SALE" } } });
     const afterOcc = await tenantDb.restaurantTable.count({ where: { status: "OCCUPIED" } });
     check(afterAct === preAct, `Cleanup: Golden Grill active orders restored (${preAct})`);

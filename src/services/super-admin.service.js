@@ -1,10 +1,15 @@
 const { platformPrisma: prisma } = require("../config/tenantPrisma");
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const { planToSnapshot, computeDates, computeExpiryDate, addDays } = require("../utils/subscription");
 const { FEATURE_SETTINGS_MAP, AVAILABLE_RESTAURANT_MODULES } = require("../config/subscription.config");
 const { encryptSecret, decryptSecret, isEncrypted } = require("../utils/encryption");
 const { createAuditLog } = require("./audit.service");
 const getPagination = require("../utils/pagination");
+const { normalizeEmail, emailRequiredError, isValidEmail } = require("../utils/email");
+const { resolveBusinessMode, normalizeBusinessType, assertPlanCompatibleWithBusinessType, PLAN_MODES } = require("../utils/businessMode");
+const { filterModulesForBusinessMode } = require("../config/subscription.config");
+const { sendUserCredentialsEmail } = require("./email.service");
 
 function buildRestaurantWhere(opts) {
   var where = { deletedAt: null };
@@ -298,11 +303,28 @@ const restaurantDetails = async function(id) {
     },
   });
   if (!r) throw new Error("Restaurant not found");
-  return r;
+  // Include the tenant dietaryMode (platform-level configuration, not
+  // operational data) so the Edit Restaurant form can show the current value.
+  var dietaryMode = null;
+  if (r.tenantSchema) {
+    try {
+      var { getTenantClient } = require("../config/tenantPrisma");
+      var tdb = getTenantClient(r.tenantSchema);
+      var setting = await tdb.restaurantSetting.findFirst({ where: { restaurantId: r.id }, select: { dietaryMode: true } });
+      dietaryMode = setting ? setting.dietaryMode : null;
+    } catch (e) {
+      console.warn("[SA] dietaryMode read failed for restaurant", id, e.message);
+    }
+  }
+  return { ...r, dietaryMode };
 };
 
 var createRestaurant = async function(data, userId, ipAddress, userAgent) {
-  var name = data.name, ownerName = data.ownerName, mobile = data.mobile, email = data.email, gstNumber = data.gstNumber, fssaiNumber = data.fssaiNumber, address = data.address, country = data.country || "India", state = data.state, city = data.city, pincode = data.pincode, timezone = data.timezone || "Asia/Kolkata", currency = data.currency || "INR", language = data.language || "en", logo = data.logo, status = data.status || "ACTIVE", adminName = data.adminName, adminEmail = data.adminEmail, adminPassword = data.adminPassword, businessType = data.businessType || "RESTAURANT", website = data.website;
+  var name = data.name, ownerName = data.ownerName, mobile = data.mobile, email = data.email, gstNumber = data.gstNumber, fssaiNumber = data.fssaiNumber, address = data.address, country = data.country || "India", state = data.state, city = data.city, pincode = data.pincode, timezone = data.timezone || "Asia/Kolkata", currency = data.currency || "INR", language = data.language || "en", logo = data.logo, status = data.status || "ACTIVE", adminName = data.adminName, adminEmail = data.adminEmail, adminPassword = data.adminPassword, businessType = normalizeBusinessType(data.businessType) || "RESTAURANT", website = data.website;
+  // NOTE: no legal-acceptance gate here — this is the PLATFORM administrative
+  // creation path (Super Admin acts for the platform, not as an accepting
+  // customer). Mandatory Terms/Privacy acceptance is enforced ONLY in the
+  // self-serve registration flow (onboarding.service acceptLegal + legalSchema).
   // Resolve the subscription plan from the database (by planId or code) — never hardcoded
   var plan = null;
   if (data.planId) {
@@ -313,13 +335,36 @@ var createRestaurant = async function(data, userId, ipAddress, userAgent) {
     plan = (await prisma.plan.findFirst({ where: { isDefault: true } })) || (await prisma.plan.findFirst({ where: { code: "TRIAL" } }));
   }
   if (!plan) throw new Error("Subscription plan not found. Create a plan in Plans Management first.");
+  // Same shared rule as public onboarding: the plan mode must match the mode
+  // derived from the business type (no separate rules for SA creation).
+  assertPlanCompatibleWithBusinessType(businessType, plan);
   var billingCycle = plan.billingCycle || "MONTHLY";
   var dates = computeDates(plan, billingCycle, new Date());
   var snapshot = planToSnapshot(plan, billingCycle);
   var existingPhone = await prisma.restaurant.findUnique({ where: { phone: mobile } });
   if (existingPhone) throw new Error("A restaurant with this phone number already exists");
-  if (email) { var existingEmail = await prisma.restaurant.findUnique({ where: { email: email } }); if (existingEmail) throw new Error("A restaurant with this email already exists"); }
-  var hashedPassword = await bcrypt.hash(adminPassword, 10);
+  // Canonical contact email (trim + lowercase) BEFORE any uniqueness check —
+  // "Test@Example.COM" must collide with an existing "test@example.com".
+  if (email) {
+    if (!isValidEmail(email)) throw new Error("Please enter a valid email address.");
+    email = normalizeEmail(email);
+    var existingEmail = await prisma.restaurant.findUnique({ where: { email: email } }); if (existingEmail) throw new Error("A restaurant with this email already exists");
+  }
+  // Admin identity email — normalize + validate before the uniqueness checks.
+  var adminEmailError = emailRequiredError(adminEmail);
+  if (adminEmailError) throw new Error(adminEmailError);
+  adminEmail = normalizeEmail(adminEmail);
+  var existingAdmin = await prisma.user.findUnique({ where: { email: adminEmail } });
+  if (existingAdmin) throw new Error("A user with this email already exists. Use a different admin email.");
+  // ── Temporary credential generation for the new ADMIN ──
+  // A strong random password is generated (never chosen by the SA and never a
+  // reused value), stored ONLY as a bcrypt hash, and emailed once. The user
+  // must change it at first login (mustChangePassword) — after the change the
+  // temporary value stops working because the hash no longer matches.
+  var temporaryPassword = data.adminPassword && String(data.adminPassword).trim()
+    ? String(data.adminPassword)
+    : generateTemporaryPassword();
+  var hashedPassword = await bcrypt.hash(temporaryPassword, 10);
   var { initializeTenantSchema } = require("../utils/tenantSchema");
   var { getTenantClient } = require("../config/tenantPrisma");
 
@@ -335,10 +380,16 @@ var createRestaurant = async function(data, userId, ipAddress, userAgent) {
   // ── Phase 3: Complete remaining setup in a transaction ──
   return prisma.$transaction(async function(tx) {
     // Create restaurant setting in tenant schema
-    await tenantDb.restaurantSetting.create({ data: { restaurantId: restaurant.id, restaurantName: name, currency: currency, timezone: timezone, language: language, taxPercentage: 0, serviceCharge: 0, roundOffEnabled: true, billPrefix: "BILL", invoicePrefix: "INV", kotPrefix: "KOT", receiptFooter: "Thank You! Visit Again." } });
+    // Create restaurant setting in tenant schema — dietaryMode comes from the
+    // Super Admin Food/Dietary Configuration (default VEG_AND_NON_VEG).
+    await tenantDb.restaurantSetting.create({ data: { restaurantId: restaurant.id, restaurantName: name, currency: currency, timezone: timezone, language: language, taxPercentage: 0, serviceCharge: 0, roundOffEnabled: true, billPrefix: "BILL", invoicePrefix: "INV", kotPrefix: "KOT", receiptFooter: "Thank You! Visit Again.", dietaryMode: data.dietaryMode || "VEG_AND_NON_VEG" } });
     var sub = await tx.subscription.create({ data: { restaurantId: restaurant.id, planId: plan.id, plan: plan.code, status: plan.code === "TRIAL" ? "TRIAL" : "ACTIVE", businessMode: snapshot.businessMode, startDate: dates.startDate, expiryDate: dates.expiryDate, nextRenewalDate: dates.expiryDate, billingCycle: billingCycle, autoRenew: snapshot.autoRenew, maxUsers: data.maxUsers != null ? Number(data.maxUsers) : snapshot.maxUsers, maxTables: data.maxTables != null ? Number(data.maxTables) : snapshot.maxTables, maxMenuItems: data.maxMenuItems != null ? Number(data.maxMenuItems) : snapshot.maxMenuItems, maxFloors: snapshot.maxFloors, maxPrinters: snapshot.maxPrinters, maxBranches: snapshot.maxBranches, maxOrdersPerMonth: snapshot.maxOrdersPerMonth, storageLimitMB: snapshot.storageLimitMB, features: snapshot.features, amount: snapshot.amount } });
     await applyPlanFeaturesToSettings(tx, restaurant.id, snapshot.features, snapshot.businessMode);
-    var admin = await tx.user.create({ data: { restaurantId: restaurant.id, name: adminName, email: adminEmail, password: hashedPassword, role: "ADMIN", isActive: true } });
+    var admin = await tx.user.create({ data: { restaurantId: restaurant.id, name: adminName, email: adminEmail, password: hashedPassword, role: "ADMIN", isActive: true, mustChangePassword: true, passwordChangedAt: new Date() } });
+    // NOTE: no PolicyAgreement rows are written here. PolicyAgreement records
+    // legal consent given by the ACCEPTING party (self-serve applicants); a
+    // Super Admin creating a tenant is a platform operation, not a consent
+    // event. The PolicyAgreement infrastructure itself is untouched.
     await recordSubscriptionHistory(tx, { restaurantId: restaurant.id, changeType: "CREATION", previousPlanId: null, newPlanId: plan.id, previousPlan: null, newPlan: plan.code, previousStatus: null, newStatus: plan.code === "TRIAL" ? "TRIAL" : "ACTIVE", billingCycle: billingCycle, amount: snapshot.amount, expiryDate: dates.expiryDate, changedBy: userId, notes: "Restaurant created with the " + plan.name + " plan", ipAddress: ipAddress });
     // ── Notifications & audit — BOTH planes stay in their own store ──
     // Tenant plane: restaurant users get the event in their tenant schema.
@@ -352,9 +403,57 @@ var createRestaurant = async function(data, userId, ipAddress, userAgent) {
     } catch (platformErr) {
       console.error("[Onboarding] Platform notification/audit failed (non-critical):", platformErr.message);
     }
-    return { id: restaurant.id, name: restaurant.name, plan: plan.code, admin: { id: admin.id, name: admin.name, email: admin.email } };
+    return { id: restaurant.id, name: restaurant.name, plan: plan.code, admin: { id: admin.id, name: admin.name, email: admin.email }, temporaryPassword: temporaryPassword };
   });
 };
+
+/**
+ * Strong random temporary password — 14 chars over a guaranteed-mixed
+ * alphabet (upper + lower + digit + special). Generated with crypto.randomInt
+ * so every character is uniformly random. NEVER logged, NEVER stored in
+ * plaintext (only hashed) — it travels once inside the credentials email.
+ */
+function generateTemporaryPassword() {
+  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"; // no I/O to avoid confusion
+  const lower = "abcdefghijkmnpqrstuvwxyz"; // no l/o
+  const digits = "23456789"; // no 0/1
+  const special = "!@#$%^&*";
+  const all = upper + lower + digits + special;
+  const pick = (set) => set[crypto.randomInt(0, set.length)];
+  // 2 upper + 4 lower + 4 digits + 2 special = 12, +2 more from `all` = 14.
+  const chars = [pick(upper), pick(upper), pick(lower), pick(lower), pick(lower), pick(lower), pick(digits), pick(digits), pick(digits), pick(digits), pick(special), pick(special), pick(all), pick(all)];
+  // Fisher-Yates shuffle so the fixed class order is not leaked by position.
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = crypto.randomInt(0, i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
+}
+
+/**
+ * Queue the credentials email for a newly created restaurant ADMIN.
+ * Must be called AFTER the creation transaction commits (failure of email
+ * delivery must never roll back restaurant creation — the EmailLog row stays
+ * queued and the email cron retries it).
+ */
+async function queueAdminCredentialsEmail(data) {
+  try {
+    const frontendUrl = String(process.env.APP_FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "");
+    await sendUserCredentialsEmail({
+      to: data.adminEmail,
+      adminName: data.adminName,
+      restaurantName: data.restaurantName,
+      loginEmail: data.adminEmail,
+      temporaryPassword: data.temporaryPassword,
+      loginUrl: frontendUrl + "/login",
+      keySuffix: data.keySuffix,
+    });
+    return true;
+  } catch (e) {
+    console.error("[SA] Admin credentials email could not be queued (will be retried):", e.message);
+    return false;
+  }
+}
 
 var updateRestaurant = async function(id, data) {
   var restaurant = await prisma.restaurant.findUnique({ where: { id: Number(id) } });
@@ -376,11 +475,21 @@ var updateRestaurant = async function(id, data) {
   if (data.language !== undefined) updateData.language = data.language;
   if (data.logo !== undefined) updateData.logo = data.logo;
   if (data.status !== undefined) updateData.status = data.status;
-  return prisma.$transaction(async function(tx) {
-    var updated = await tx.restaurant.update({ where: { id: Number(id) }, data: updateData });
+  var updated = await prisma.$transaction(async function(tx) {
+    var u = await tx.restaurant.update({ where: { id: Number(id) }, data: updateData });
     if (data.name) { await tx.restaurantSetting.updateMany({ where: { restaurantId: Number(id) }, data: { restaurantName: data.name } }); }
-    return updated;
+    return u;
   });
+  // Dietary mode change: update the tenant RestaurantSetting only (after the
+  // public transaction — tenant writes are a separate connection). Existing
+  // MenuItem records are NEVER silently modified — a switch to VEG_ONLY just
+  // makes NON_VEG items unavailable for ordering (data stays for history).
+  if (data.dietaryMode && restaurant.tenantSchema) {
+    var { getTenantClient } = require("../config/tenantPrisma");
+    var tenantDb = getTenantClient(restaurant.tenantSchema);
+    await tenantDb.restaurantSetting.updateMany({ where: { restaurantId: Number(id) }, data: { dietaryMode: data.dietaryMode } });
+  }
+  return updated;
 };
 
 var changeRestaurantStatus = async function(id, status) {
@@ -445,6 +554,12 @@ var adminCreateUser = async function(data, userId, ipAddress, userAgent) {
   var STAFF_ROLES = ["MANAGER", "CASHIER", "KITCHEN", "WAITER"];
   var PLATFORM_ROLES = ["SUPER_ADMIN", "ADMIN"];
 
+  // Case-insensitive identity — normalize before every lookup/write so
+  // "Cashier@Restaurant.com" and "cashier@restaurant.com" are one account.
+  var emailError = emailRequiredError(email);
+  if (emailError) throw new Error(emailError);
+  email = normalizeEmail(email);
+
   if (!restaurantId) throw new Error("restaurantId is required");
   var restaurant = await prisma.restaurant.findUnique({ where: { id: Number(restaurantId) } });
   if (!restaurant) throw new Error("Restaurant not found");
@@ -508,17 +623,17 @@ var adminCreateUser = async function(data, userId, ipAddress, userAgent) {
   var user = await prisma.user.create({ data: { restaurantId: Number(restaurantId), name: name, email: email, password: hashedPassword, role: role, phone: phone || null, avatar: avatar || null, isActive: isActive } });
   await createAuditLog({ restaurantId: Number(restaurantId), userId: userId, module: "USER", action: "CREATE", description: "Created platform user " + name + " (" + email + ") with role " + role, referenceId: user.id, referenceNo: email, ipAddress: ipAddress, userAgent: userAgent });
   return { id: user.id, name: user.name, email: user.email, role: user.role };
-};
-
-var adminUpdateUser = async function(id, data) {
+};  var adminUpdateUser = async function(id, data) {
   var user = await prisma.user.findUnique({ where: { id: Number(id) } });
   if (!user) throw new Error("User not found");
   var updateData = {};
   if (data.name !== undefined) updateData.name = data.name;
   if (data.email !== undefined) {
-    var existing = await prisma.user.findFirst({ where: { email: data.email, id: { not: Number(id) } } });
-    if (existing) throw new Error("Email already in use by another user");
-    updateData.email = data.email;
+    if (!isValidEmail(data.email)) throw new Error("Please enter a valid email address.");
+    var cleanEmail = normalizeEmail(data.email);
+    var existing = await prisma.user.findFirst({ where: { email: cleanEmail, id: { not: Number(id) } } });
+    if (existing) throw new Error("This email address is already registered.");
+    updateData.email = cleanEmail;
   }
   if (data.phone !== undefined) updateData.phone = data.phone;
   if (data.role !== undefined) updateData.role = data.role;
@@ -530,10 +645,25 @@ var adminUpdateUser = async function(id, data) {
 var adminResetPassword = async function(id) {
   var user = await prisma.user.findUnique({ where: { id: Number(id) } });
   if (!user) throw new Error("User not found");
-  var newPassword = "reset123";
-  var hashedPassword = await bcrypt.hash(newPassword, 10);
-  await prisma.user.update({ where: { id: Number(id) }, data: { password: hashedPassword, passwordChangedAt: new Date() } });
-  return { newPassword: newPassword };
+  // ── Secure reset: strong random temporary password, emailed once ──
+  // NEVER return the plaintext password from the API (the old implementation
+  // returned a hardcoded default password in the response body — removed).
+  // The plaintext travels only inside the credentials email; storage is
+  // bcrypt-only and the user must change it at first login (mustChangePassword).
+  var temporaryPassword = generateTemporaryPassword();
+  var hashedPassword = await bcrypt.hash(temporaryPassword, 10);
+  await prisma.user.update({ where: { id: Number(id) }, data: { password: hashedPassword, passwordChangedAt: new Date(), mustChangePassword: true } });
+  var emailQueued = false;
+  if (user.email) {
+    emailQueued = await queueAdminCredentialsEmail({
+      adminEmail: user.email,
+      adminName: user.name,
+      restaurantName: null,
+      temporaryPassword: temporaryPassword,
+      keySuffix: "reset:" + Date.now(),
+    });
+  }
+  return { emailQueued: emailQueued, emailedTo: user.email || null };
 };
 
 var adminToggleUserStatus = async function(id) {
@@ -601,6 +731,11 @@ var changeSubscriptionPlan = async function(restaurantId, data, userId, ipAddres
   var plan = await prisma.plan.findUnique({ where: { id: Number(data.planId) } });
   if (!plan) badRequest("Plan not found");
   if (!plan.isActive) badRequest("Selected plan is inactive. Activate it before assigning.");
+  // Plan changes must respect businessType → businessMode compatibility
+  // (spec §14) — an existing restaurant cannot switch into a plan whose mode
+  // contradicts its business type.
+  var currentRestaurant = await prisma.restaurant.findUnique({ where: { id: Number(restaurantId) }, select: { businessType: true } });
+  if (currentRestaurant) assertPlanCompatibleWithBusinessType(currentRestaurant.businessType, plan);
 
   var billingCycle = data.billingCycle || plan.billingCycle || "MONTHLY";
   if (["MONTHLY", "YEARLY", "ONCE"].indexOf(billingCycle) === -1) badRequest("Invalid billing cycle");
@@ -814,6 +949,11 @@ var listPlans = async function(opts) {
   if (opts.status === "active") where.isActive = true;
   if (opts.status === "inactive") where.isActive = false;
   if (opts.active === "true" || opts.active === true) where.isActive = true;
+  // Business/plan-mode filter (?businessMode=RESTAURANT|BASIC_POS) — plan
+  // listing is filterable by mode for both SA management and consumers.
+  if (opts.businessMode && PLAN_MODES.indexOf(String(opts.businessMode).toUpperCase()) !== -1) {
+    where.businessMode = String(opts.businessMode).toUpperCase();
+  }
   var sortField = ["name", "code", "monthlyPrice", "yearlyPrice", "sortOrder", "createdAt"].indexOf(opts.sortBy) !== -1 ? opts.sortBy : "sortOrder";
   var sortDir = opts.sortOrder === "desc" ? "desc" : "asc";
   var plans = await prisma.plan.findMany({
@@ -849,11 +989,19 @@ var createPlan = async function(data) {
   var code = String(data.code).toUpperCase().replace(/\s+/g, "_");
   var existing = await prisma.plan.findUnique({ where: { code: code } });
   if (existing) throw new Error("A plan with this code already exists");
+  // Entitlement capability rule (single authoritative map): a plan's mode
+  // decides which modules it may carry. Restaurant-only modules sent for a
+  // BASIC_POS plan are silently stripped — the API can never persist them.
+  var planMode = PLAN_MODES.indexOf(String(data.businessMode || "RESTAURANT").toUpperCase()) !== -1
+    ? String(data.businessMode || "RESTAURANT").toUpperCase()
+    : "RESTAURANT";
+  if (Array.isArray(data.modules)) data.modules = filterModulesForBusinessMode(data.modules, planMode);
+  if (Array.isArray(data.features)) data.features = filterModulesForBusinessMode(data.features, planMode);
   return prisma.$transaction(async function (tx) {
     var plan = await tx.plan.create({
       data: {
         code: code, name: data.name, description: data.description || null,
-        businessMode: data.businessMode || "RESTAURANT",
+        businessMode: planMode,
         monthlyPrice: Number(data.monthlyPrice || 0), yearlyPrice: Number(data.yearlyPrice || 0),
         billingCycle: data.billingCycle || "MONTHLY", trialDays: Number(data.trialDays || 0),
         maxUsers: data.maxUsers != null ? Number(data.maxUsers) : null,
@@ -878,6 +1026,13 @@ var createPlan = async function(data) {
 var updatePlan = async function(id, data) {
   var plan = await prisma.plan.findUnique({ where: { id: Number(id) } });
   if (!plan) throw new Error("Plan not found");
+  // Same capability rule on update: the effective mode (changed now, or the
+  // plan's existing mode) decides which modules may remain on the plan.
+  var effectiveMode = PLAN_MODES.indexOf(String(data.businessMode || "").toUpperCase()) !== -1
+    ? String(data.businessMode).toUpperCase()
+    : (plan.businessMode || "RESTAURANT");
+  if (Array.isArray(data.modules)) data.modules = filterModulesForBusinessMode(data.modules, effectiveMode);
+  if (Array.isArray(data.features)) data.features = filterModulesForBusinessMode(data.features, effectiveMode);
   var updateData = {};
   if (data.code !== undefined) {
     var code = String(data.code).toUpperCase().replace(/\s+/g, "_");
@@ -894,7 +1049,23 @@ var updatePlan = async function(id, data) {
   ["maxUsers", "maxTables", "maxFloors", "maxMenuItems", "maxPrinters", "maxBranches", "maxOrdersPerMonth", "storageLimitMB"].forEach(function (k) {
     if (data[k] !== undefined) updateData[k] = data[k] === null || data[k] === "" ? null : Number(data[k]);
   });
-  if (data.businessMode !== undefined) updateData.businessMode = data.businessMode;
+  // businessMode is validated: only RESTAURANT / BASIC_POS are accepted.
+  if (data.businessMode !== undefined) {
+    var mode = String(data.businessMode || "").toUpperCase();
+    if (PLAN_MODES.indexOf(mode) === -1) throw new Error("Invalid business mode. Allowed values: RESTAURANT, BASIC_POS.");
+    if (mode !== (plan.businessMode || "RESTAURANT")) {
+      // Changing a plan's mode re-categorizes every subscription using it.
+      // Surface the dependency so the SA UI can confirm before applying.
+      var dependents = await prisma.subscription.count({ where: { planId: Number(id) } });
+      if (dependents > 0 && data.confirmModeChange !== true) {
+        var err = new Error("This plan is used by " + dependents + " subscription(s). Changing its mode re-categorizes them — pass confirmModeChange=true to proceed.");
+        err.statusCode = 409;
+        err.code = "PLAN_MODE_CHANGE_CONFIRMATION";
+        throw err;
+      }
+    }
+    updateData.businessMode = mode;
+  }
   if (data.features !== undefined) updateData.features = Array.isArray(data.features) ? data.features : [];
   if (data.isActive !== undefined) updateData.isActive = !!data.isActive;
   if (data.isDefault !== undefined) updateData.isDefault = !!data.isDefault;

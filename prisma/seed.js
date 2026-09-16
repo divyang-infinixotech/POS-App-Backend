@@ -284,7 +284,12 @@
       { key: "qr_ordering", name: "QR Ordering", icon: "qr-code", sortOrder: 15 },
       { key: "api_access", name: "API Access", icon: "code", sortOrder: 16 },
       { key: "multi_terminal", name: "Multi-Terminal", icon: "monitor", sortOrder: 17 },
+      { key: "barcode_scanner", name: "Barcode Scanner", icon: "scan-barcode", sortOrder: 18 },
     ];
+    // Part 11: Barcode Scanner is a plan-controlled feature. Basic plans do not
+    // include it; Premium does. (AVAILABLE_RESTAURANT_MODULES in
+    // subscription.config.js must keep barcode_scanner listed so the plan
+    // editor exposes the toggle.)
     const BASIC_MODULES = ["dashboard", "pos", "billing", "floors", "tables", "kitchen", "active_orders", "menu", "customers", "staff", "reports", "settings", "printers"];
     const PREMIUM_MODULES = MODULES.map((m) => m.key);
 

@@ -1,10 +1,14 @@
 // tenantDb is available as req.tenantDb (attached by auth middleware)
+const { Prisma } = require("@prisma/client");
 const { successResponse, errorResponse } = require("../utils/response");
 
 const createOrUpdateSetting = async (req, res) => {
   const prisma = req.tenantDb;
   try {
-    // Destructure ALL possible fields from request body
+    // PHASE 1/17 — tenant authority: the restaurant context comes ONLY from the
+    // authenticated user. Any restaurantId sent by the browser is ignored (and
+    // never spread into Prisma data). Fields are whitelisted in FIELDS below —
+    // req.body is NEVER spread into the Prisma payload.
     const {
       restaurantName,
       gstNumber,
@@ -41,6 +45,10 @@ const createOrUpdateSetting = async (req, res) => {
       enableStock,
       enableActiveOrders,
       enableTableReservations,
+      enableStaffRoster,
+      // Barcode Scanner tenant toggle (Part 11) — plan entitlement (upper
+      // limit) is enforced by requireFeature on the barcode lookup route.
+      barcodeScannerEnabled,
       // Billing Behavior Settings
       autoPrintBill,
       autoPrintKOT,
@@ -103,6 +111,11 @@ const createOrUpdateSetting = async (req, res) => {
       ["enableStock", "enableStock", toBool],
       ["enableActiveOrders", "enableActiveOrders", toBool],
       ["enableTableReservations", "enableTableReservations", toBool],
+      // Staff Roster visibility (plan entitlement still applies first — see feature.middleware)
+      ["enableStaffRoster", "enableStaffRoster", toBool],
+      // Barcode Scanner (Part 11): restaurant-level ON/OFF. requireFeature
+      // (plan entitlement) is checked separately on the lookup route.
+      ["barcodeScannerEnabled", "barcodeScannerEnabled", toBool],
       // Billing behavior
       ["autoPrintBill", "autoPrintBill", toBool],
       ["autoPrintKOT", "autoPrintKOT", toBool],
@@ -110,8 +123,13 @@ const createOrUpdateSetting = async (req, res) => {
       ["multiplePayments", "multiplePayments", toBool],
       ["askCustomerBeforePrint", "askCustomerBeforePrint", toBool],
       ["autoReleaseTable", "autoReleaseTable", toBool],
+      // Restaurant dietary mode (Part 6): VEG_ONLY | VEG_AND_NON_VEG — the
+      // restaurant-wide maximum; individual staff can only be more restrictive.
+      ["dietaryMode", "dietaryMode", (v) => (v === "VEG_ONLY" || v === "VEG_AND_NON_VEG" ? v : undefined)],
       // POS Ordering / Layout
-      ["enablePosOrdering", "enablePosOrdering", toBool],
+      // Part 10: enablePosOrdering is NOT writable here — POS Ordering is
+      // always enabled and is force-set to true below, so a stale client
+      // payload can never disable the only order-entry workflow.
       ["posLayout", "posLayout", (v) => v || "basic"],
       // businessMode is derived from the subscription plan — admins cannot override it
       ["enableCounterSale", "enableCounterSale", toBool],
@@ -120,17 +138,38 @@ const createOrUpdateSetting = async (req, res) => {
       ["uiSettings", "uiSettings", (v) => (v && typeof v === "object" ? v : undefined)],
     ];
 
-    const data = { restaurantId: req.user.restaurantId };
+    const tenantRestaurantId = req.user.restaurantId;
+    if (!tenantRestaurantId) {
+      return errorResponse(res, "Restaurant context missing.", 403);
+    }
+
+    // PHASE 17 — EXPLICIT WHITELIST. `data` starts EMPTY and only receives the
+    // whitelisted, transformed fields above. Protected fields (id, restaurantId,
+    // createdAt, updatedAt, subscription-controlled values) can never enter the
+    // Prisma payload because they are not in FIELDS — req.body is never spread.
+    //   - `restaurantId` stays in `where` ONLY (it is a @unique non-PK column:
+    //     Prisma rejects it inside update `data` with "Invalid invocation".
+    //     CREATE is the one place it belongs, bound to the authenticated tenant).
+    //   - `enablePosOrdering` is force-set true (Part 10) — not client-writable.
+    //   - `businessMode` is subscription-derived and read-only here.
+    const data = {};
     FIELDS.forEach(([bodyKey, field, transform]) => {
       if (bodyKey in req.body) {
         const val = transform(req.body[bodyKey]);
         if (val !== undefined) data[field] = val;
       }
     });
+    if (Object.keys(data).length === 0 && !("printers" in req.body)) {
+      // Nothing editable was submitted — a malformed/empty payload is a client
+      // error (400), never a 500.
+      return errorResponse(res, "No valid settings fields provided.", 400);
+    }
+    // Part 10: POS Ordering screen is mandatory — always ON.
+    data.enablePosOrdering = true;
 
     const existing = await prisma.restaurantSetting.findUnique({
       where: {
-        restaurantId: req.user.restaurantId
+        restaurantId: tenantRestaurantId
       }
     });
 
@@ -139,13 +178,13 @@ const createOrUpdateSetting = async (req, res) => {
     if (existing) {
       setting = await prisma.restaurantSetting.update({
         where: {
-          restaurantId: req.user.restaurantId
+          restaurantId: tenantRestaurantId
         },
         data
       });
     } else {
       setting = await prisma.restaurantSetting.create({
-        data
+        data: { ...data, restaurantId: tenantRestaurantId }
       });
     }
 
@@ -192,11 +231,16 @@ const createOrUpdateSetting = async (req, res) => {
     );
 
   } catch (error) {
-    console.error(error);
-    return errorResponse(
-      res,
-      error.message
-    );
+    // PHASE 1 req.10 — log full detail server-side; return a SAFE message.
+    // Raw Prisma internals ("Invalid invocation", "Unknown argument …") must    // never leak to the frontend.
+    console.error("[settings] save failed:", error);
+    if (error instanceof Prisma.PrismaClientValidationError) {
+      return errorResponse(res, "Invalid settings payload.", 400);
+    }
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      return errorResponse(res, "Settings could not be saved.", 400);
+    }
+    return errorResponse(res, "Failed to save settings.", 500);
   }
 };
 
@@ -264,7 +308,11 @@ const getSetting = async (req, res) => {
       printers
     });
 
-  } catch (error) {return errorResponse(res, error.message);}
+  } catch (error) {
+    // PHASE 1 req.10 — same safe-error rule as the save path: no Prisma    // internals in the response body.
+    console.error("[settings] fetch failed:", error);
+    return errorResponse(res, "Failed to load settings.", 500);
+  }
 
 };
 

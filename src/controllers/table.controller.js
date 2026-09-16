@@ -1,5 +1,6 @@
 // tenantDb is available as req.tenantDb (attached by auth middleware)
 const { successResponse, errorResponse } = require("../utils/response");
+const { tableScopeFor, floorAccessDenied, getAssignedFloorIds } = require("../utils/floorAccess");
 
 const createTable = async (req, res) => {
   try {
@@ -48,9 +49,13 @@ const getTables = async (req, res) => {
       });
     }
 
+    // Floor-restricted staff (CASHIER/KITCHEN/WAITER with assignments) only see
+    // tables on their assigned floors. ADMIN/MANAGER and unassigned staff are
+    // restaurant-wide (unchanged behavior).
+    const floorScope = await tableScopeFor(req.tenantDb, req.user);
     const tables =
       await req.tenantDb.restaurantTable.findMany({
-        where: {},
+        where: floorScope || {},
         orderBy: {
           tableNo: "asc"
         },
@@ -156,6 +161,13 @@ const updateTableStatus = async (req, res) => {
 
     }
 
+    // Floor-restricted staff cannot operate tables on unassigned floors.
+    const _scope = await tableScopeFor(req.tenantDb, req.user);
+    if (_scope && existingTable.floorId != null) {
+      const _ids = await getAssignedFloorIds(req.tenantDb, req.user.id, req.user.role);
+      if (!_ids.includes(existingTable.floorId)) return floorAccessDenied(res);
+    }
+
     const table =
       await req.tenantDb.restaurantTable.update({
 
@@ -203,6 +215,13 @@ const updateTable = async (req, res) => {
       });
     }
 
+    // Floor-restricted staff cannot operate tables on unassigned floors.
+    const _scope = await tableScopeFor(req.tenantDb, req.user);
+    if (_scope && existingTable.floorId != null) {
+      const _ids = await getAssignedFloorIds(req.tenantDb, req.user.id, req.user.role);
+      if (!_ids.includes(existingTable.floorId)) return floorAccessDenied(res);
+    }
+
     const updateData = {};
     if (tableNo !== undefined) updateData.tableNo = tableNo;
     if (name !== undefined) updateData.name = name;
@@ -238,6 +257,13 @@ const deleteTable = async (req, res) => {
         success: false,
         message: "Table not found"
       });
+    }
+
+    // Floor-restricted staff cannot delete tables on unassigned floors.
+    const _delScope = await tableScopeFor(req.tenantDb, req.user);
+    if (_delScope && existingTable.floorId != null) {
+      const _ids = await getAssignedFloorIds(req.tenantDb, req.user.id, req.user.role);
+      if (!_ids.includes(existingTable.floorId)) return floorAccessDenied(res);
     }
 
     // Check if table has active orders (scoped to restaurant)

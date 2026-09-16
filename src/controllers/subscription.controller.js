@@ -6,6 +6,7 @@ const {
   createRazorpayOrder,
   verifyPaymentSignature,
   verifyWebhookSignature,
+  razorpayPaiseMatches,
   activateSubscriptionPayment,
   computeBaseExpiry,
 } = require("../services/razorpay.service");
@@ -347,14 +348,89 @@ const webhook = async (req, res) => {
     // Record last webhook activity for the SA webhook-health card (no secrets).
     recordWebhookActivity(event).catch(() => {});
 
-    if (event.event !== "payment.captured" && event.event !== "payment.authorized") {
-      return res.status(200).json({ success: true, ignored: true });
-    }
-
     const payment = await prisma.subscriptionPayment.findUnique({
       where: { razorpayOrderId: entity.order_id },
     });
     if (!payment) return res.status(200).json({ success: true, ignored: true });
+
+    // ── payment.failed — record the failure, never activate ──
+    if (event.event === "payment.failed") {
+      await prisma.subscriptionPayment.update({
+        where: { id: payment.id },
+        data: {
+          status: "FAILED",
+          paymentMethod: entity.method || null,
+          errorMessage: entity.error_description || "Payment failed at the gateway",
+        },
+      }).catch(() => {});
+      // Onboarding applications return to the payment step for a retry.
+      const failRestaurant = await prisma.restaurant.findUnique({
+        where: { id: payment.restaurantId },
+        select: { id: true, selfServe: true, status: true },
+      });
+      if (failRestaurant && failRestaurant.selfServe && failRestaurant.status !== "ACTIVE") {
+        await prisma.restaurant.update({
+          where: { id: failRestaurant.id },
+          data: { onboardingStatus: "PAYMENT_FAILED" },
+        }).catch(() => {});
+      }
+      return res.status(200).json({ success: true, status: "FAILED" });
+    }
+
+    if (event.event !== "payment.captured" && event.event !== "payment.authorized") {
+      return res.status(200).json({ success: true, ignored: true });
+    }
+
+    // ── Payment amount validation (never trust the client / a stray capture) ──
+    // The order was created from the plan price the BACKEND stored on the
+    // payment row. A captured event for a different amount can be a partial
+    // capture, a misconfigured order, or a replay — none of them may activate
+    // the subscription or an onboarding application.
+    const expectedPaise = Math.round(Number(payment.amount) * 100);
+    if (!razorpayPaiseMatches(entity.amount, payment.amount)) {
+      const received = Number.isFinite(Number(entity.amount)) ? Number(entity.amount) / 100 : 0;
+      console.error(
+        `[webhook] Amount mismatch for payment ${payment.id}: expected ₹${(expectedPaise / 100).toFixed(2)}, webhook reported ₹${received.toFixed(2)} — not activated`
+      );
+      return res.status(400).json({
+        success: false,
+        message: `Payment amount mismatch: expected ₹${(expectedPaise / 100).toFixed(2)} but the gateway reported ₹${received.toFixed(2)}. The subscription was not activated.`,
+      });
+    }
+
+    // ── Self-serve onboarding payments route through the onboarding service ──
+    // An onboarding application's SubscriptionPayment row is in the SAME table
+    // as normal subscription payments, but a plain activateSubscriptionPayment
+    // would flip the restaurant ACTIVE WITHOUT provisioning its tenant schema.
+    // Detect self-serve applications (restaurant not ACTIVE yet) and delegate.
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: payment.restaurantId },
+      select: { id: true, selfServe: true, status: true },
+    });
+    if (restaurant && restaurant.selfServe && restaurant.status !== "ACTIVE") {
+      const onboardingService = require("../services/onboarding.service");
+      // Mark the payment PAID (idempotent) and route by review mode.
+      const claimed = await prisma.subscriptionPayment.updateMany({
+        where: { id: payment.id, status: { not: "PAID" } },
+        data: { status: "PAID", razorpayPaymentId: entity.id, paymentMethod: entity.method || null, paidAt: new Date() },
+      });
+      if (claimed.count !== 1) {
+        return res.status(200).json({ success: true, alreadyPaid: true, status: "PAID" });
+      }
+      const result = await onboardingService.finishVerifiedPayment(
+        { id: restaurant.id, status: restaurant.status },
+        { ...payment, razorpayPaymentId: entity.id },
+        payment.createdBy || null,
+        { ipAddress: null, userAgent: "razorpay-webhook" }
+      );
+      return res.status(200).json({
+        success: true,
+        alreadyPaid: false,
+        status: result.status,
+        plan: result.planCode || payment.planCode,
+        newExpiry: result.expiryDate || null,
+      });
+    }
 
     const result = await activateSubscriptionPayment({
       restaurantId: payment.restaurantId,

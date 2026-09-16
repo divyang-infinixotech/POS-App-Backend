@@ -1,18 +1,19 @@
 /**
- * RESTAURANT MODE — POS ORDERING SETTINGS ABSENT (PERMANENT QA)
+ * RESTAURANT MODE — PLAN-DRIVEN BUSINESS MODE (PERMANENT QA)
  *
- * Verifies in the live Vite app that when Business Mode = Restaurant the POS
- * Screen Settings page never renders any POS-Ordering / Basic-POS-only control
- * — not disabled, not CSS-hidden, not greyed out: completely absent from the DOM.
+ * Verifies in the live Vite app that the redesigned POS Screen Settings page
+ * treats Business Mode as plan-driven (read-only banner, NO switcher cards)
+ * and that module toggles stay scoped to the effective business mode.
  *
- *  1. Restaurant mode: "Enable POS Ordering Screen" + "Enable Basic POS Quick
- *     Billing" have ZERO matching elements in the DOM; real restaurant toggles
- *     (Kitchen, Floor Management, Active Orders, …) are present.
- *  2. Live mode switching: Restaurant → Basic POS → Hybrid → Restaurant —
- *     controls appear/disappear immediately, no stale rows.
- *  3. Search respects mode: "POS Ordering" / "Quick Billing" return no section
- *     in Restaurant mode; "Kitchen" surfaces the Kitchen & KOT setting.
- *  4. Persistence: mode switch + Save survives refresh (API-verified).
+ *  1. Restaurant mode: "Enable POS Ordering Screen" toggle present (generic
+ *     screen toggle); counter-only "Enable Basic POS Quick Billing" is
+ *     completely absent from the DOM; real restaurant toggles (Kitchen, Floor
+ *     Management, Active Orders, …) are present; plan-driven banner shown.
+ *  2. No in-app mode switching: no Basic-POS/Hybrid switcher cards anywhere.
+ *  3. Search respects mode: "POS Ordering" surfaces the section (toggle is
+ *     visible in restaurant mode); "Quick Billing" returns nothing.
+ *  4. Persistence: businessMode stays derived from the plan even when a
+ *     client POSTs a different value (backend-authoritative).
  *  5. Responsive: no horizontal overflow in Restaurant mode at all viewports.
  *  6. No console errors / failed API requests.
  *
@@ -98,39 +99,22 @@ async function apiLogin(email, password) {
     await sleep(800);
   };
 
-  // Switch business mode by clicking its card (desc text distinguishes them)
-  const clickMode = async (desc) => {
-    await page.evaluate((d) => {
-      const el = [...document.querySelectorAll("button")].find((x) => x.innerText.includes(d));
-      if (el) el.click();
-    }, desc);
-    await sleep(1200);
-  };
-
   const adminToken = await apiLogin("admin@restaurant.com", "password123");
   check(!!adminToken, "restaurant ADMIN login works");
-
-  // Ensure DB businessMode is restaurant before the browser test
-  if (adminToken) {
-    const r = await fetch(`${API}/settings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
-      body: JSON.stringify({ restaurantName: "The Golden Grill", businessMode: "restaurant" }),
-    });
-    check(r.status === 200 || r.status === 201, "DB businessMode set to restaurant");
-  }
 
   await login("admin@restaurant.com", "password123");
   await nav("POS Settings");
   await tabClick("POS Screen Settings");
 
-  // ══ 1. RESTAURANT MODE — POS ordering controls COMPLETELY ABSENT ══
+  // ══ 1. RESTAURANT MODE — plan-driven banner + mode-scoped toggles ══
   let n = await countText("Enable POS Ordering Screen");
-  check(n === 0, `Restaurant mode: "Enable POS Ordering Screen" absent from DOM (found ${n})`);
+  check(n > 0, `Restaurant mode: "Enable POS Ordering Screen" toggle present (found ${n})`);
   n = await countText("Enable Basic POS Quick Billing");
   check(n === 0, `Restaurant mode: "Enable Basic POS Quick Billing" absent from DOM (found ${n})`);
   n = await countTextInModuleVisibility("Quick Billing");
   check(n === 0, `Restaurant mode: no "Quick Billing" control inside Module Visibility (found ${n})`);
+  n = await countText("Business mode is managed by your subscription plan");
+  check(n > 0, `Restaurant mode: plan-driven Business Mode banner shown (found ${n})`);
 
   // Real restaurant toggles still present
   n = await countText("Enable Kitchen (KOT)");
@@ -144,38 +128,24 @@ async function apiLogin(email, password) {
   n = await countText("Enable Billing Module");
   check(n > 0, `Restaurant mode: Billing toggle present (found ${n})`);
 
-  // ══ 2. LIVE MODE SWITCHING ══
-  // Restaurant → Basic POS → controls appear
-  await clickMode("Quick billing, no tables/KOT/active orders");
-  n = await countText("Enable POS Ordering Screen");
-  check(n > 0, "Basic POS mode: 'Enable POS Ordering Screen' appears (found " + n + ")");
-  n = await countText("Enable Basic POS Quick Billing");
-  check(n > 0, "Basic POS mode: 'Enable Basic POS Quick Billing' appears (found " + n + ")");
-  n = await countText("Enable Floor Management");
-  check(n === 0, "Basic POS mode: floor management hidden (found " + n + ")");
-
-  // Basic POS → Hybrid → both POS + restaurant controls
-  await clickMode("Both dine-in and counter sales");
-  n = await countText("Enable POS Ordering Screen");
-  check(n > 0, "Hybrid mode: 'Enable POS Ordering Screen' appears (found " + n + ")");
-  n = await countText("Enable Floor Management");
-  check(n > 0, "Hybrid mode: Floor Management appears (found " + n + ")");
-  n = await countText("Enable Kitchen (KOT)");
-  check(n > 0, "Hybrid mode: Kitchen (KOT) appears (found " + n + ")");
-
-  // Hybrid → Restaurant → controls disappear again (no stale rows)
-  await clickMode("Full dine-in with tables, KOT, Active Orders");
-  n = await countText("Enable POS Ordering Screen");
-  check(n === 0, "Restaurant mode (back): 'Enable POS Ordering Screen' absent again (found " + n + ")");
-  n = await countText("Enable Basic POS Quick Billing");
-  check(n === 0, "Restaurant mode (back): 'Enable Basic POS Quick Billing' absent again (found " + n + ")");
+  // ══ 2. NO IN-APP MODE SWITCHING (plan-driven) ══
+  // The old mode-switcher cards (click-to-switch with description text) must
+  // not exist anywhere — business mode comes from the subscription plan.
+  n = await countText("Quick billing, no tables/KOT/active orders");
+  check(n === 0, `No Basic-POS switcher card in DOM (found ${n})`);
+  n = await countText("Both dine-in and counter sales");
+  check(n === 0, `No Hybrid switcher card in DOM (found ${n})`);
+  n = await countText("Full dine-in with tables, KOT, Active Orders");
+  check(n === 0, `No Restaurant switcher card in DOM (found ${n})`);
 
   // ══ 3. SEARCH RESPECTS MODE ══
+  // 'Enable POS Ordering Screen' is a visible restaurant-mode toggle, so its
+  // section surfaces; counter-only 'Quick Billing' must never surface.
   await setSearch("POS Ordering");
   let searchSections = await page.evaluate(() => {
     return [...document.querySelectorAll("button")].filter((x) => /POS Screen Settings|POS Config/i.test(x.innerText)).length;
   });
-  check(searchSections === 0, "Search 'POS Ordering' in Restaurant mode → no matching section (found " + searchSections + ")");
+  check(searchSections > 0, "Search 'POS Ordering' in Restaurant mode → POS Screen Settings surfaces (found " + searchSections + ")");
 
   await setSearch("Quick Billing");
   searchSections = await page.evaluate(() => {
@@ -190,11 +160,19 @@ async function apiLogin(email, password) {
   check(searchSections > 0, "Search 'Kitchen' in Restaurant mode → POS Screen Settings surfaces (found " + searchSections + ")");
   await setSearch("");
 
-  // ══ 4. PERSISTENCE — save mode + refresh survives ══
-  await page.evaluate(() => { const b = [...document.querySelectorAll("button")].find((x) => /^Save Settings$/i.test(x.innerText.trim())); if (b) b.click(); });
-  await sleep(2500);
+  // ══ 4. PERSISTENCE — businessMode is plan-authoritative ══
+  // Even if a client POSTs a different businessMode, the backend derives the
+  // effective mode from the subscription plan and ignores the input.
+  if (adminToken) {
+    const r = await fetch(`${API}/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ restaurantName: "The Golden Grill", businessMode: "counter" }),
+    });
+    check(r.status === 200 || r.status === 201, "POST /settings with businessMode=counter accepted (field ignored)");
+  }
   let db = await fetch(`${API}/settings`, { headers: { Authorization: `Bearer ${adminToken}` } }).then(r => r.json());
-  check(db.setting.businessMode === "restaurant", `saved businessMode = restaurant in DB (got "${db.setting.businessMode}")`);
+  check(db.setting.businessMode === "restaurant", `businessMode still derived from plan (got "${db.setting.businessMode}")`);
 
   await page.reload({ waitUntil: "networkidle2" });
   await sleep(2500);
@@ -202,7 +180,9 @@ async function apiLogin(email, password) {
   await nav("POS Settings");
   await tabClick("POS Screen Settings");
   n = await countText("Enable POS Ordering Screen");
-  check(n === 0, "After refresh: Restaurant mode still hides POS Ordering controls (found " + n + ")");
+  check(n > 0, "After refresh: Restaurant mode still shows POS Ordering toggle (found " + n + ")");
+  n = await countText("Enable Basic POS Quick Billing");
+  check(n === 0, "After refresh: Restaurant mode still hides Quick Billing (found " + n + ")");
   n = await countText("Enable Kitchen (KOT)");
   check(n > 0, "After refresh: Restaurant mode still shows Kitchen (found " + n + ")");
 

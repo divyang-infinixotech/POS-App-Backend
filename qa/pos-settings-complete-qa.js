@@ -210,26 +210,18 @@ async function apiLogin(email, password) {
   await tabClick("POS Screen Settings");
   t = await bodyText();
   check(/Business Mode/i.test(t), "Business Mode section present");
-  check(/Restaurant/i.test(t) && /Basic POS/i.test(t) && /Hybrid/i.test(t), "all three business modes shown");
+  // Business mode is PLAN-DRIVEN now (single read-only card), not a switcher:
+  // the current mode label must be shown with its plan note.
+  check(/Restaurant|Basic POS/i.test(t), "current business mode shown (plan-driven card)");
+  check(/Included in your current plan/i.test(t), "plan-driven mode note shown");
   check(/Module Visibility/i.test(t), "Module Visibility section present");
   check(/Kitchen & KOT/i.test(t), "Kitchen & KOT section present inside POS Screen Settings");
   check(/KOT Printing/i.test(t), "KOT Printing info present");
-  // Restaurant mode (current) must NOT show POS Ordering-only controls
-  check(!/Enable POS Ordering Screen/i.test(t), "Restaurant mode hides 'Enable POS Ordering Screen'");
+  // Restaurant mode: POS Ordering + Floor Management visible, Basic POS quick billing hidden
+  check(/Enable POS Ordering Screen/i.test(t), "Restaurant mode shows 'Enable POS Ordering Screen'");
   check(!/Enable Basic POS Quick Billing/i.test(t), "Restaurant mode hides 'Enable Basic POS Quick Billing'");
   check(/Enable Kitchen \(KOT\)/i.test(t), "Kitchen toggle visible in Restaurant mode");
   check(/Enable Floor Management/i.test(t), "Floor Management toggle visible in Restaurant mode");
-
-  // Switch to Basic POS → POS Ordering controls appear
-  await page.evaluate(() => { const el = [...document.querySelectorAll("button")].find((x) => x.innerText.includes("Basic POS") && x.innerText.includes("Quick billing")); if (el) el.click(); });
-  await sleep(1200);
-  t = await bodyText();
-  check(/Enable POS Ordering Screen/i.test(t), "Basic POS mode shows 'Enable POS Ordering Screen'");
-  check(/Enable Basic POS Quick Billing/i.test(t), "Basic POS mode shows 'Enable Basic POS Quick Billing'");
-  check(!/Enable Floor Management/i.test(t), "Basic POS mode hides floor/table management");
-  // Back to Restaurant mode (do not persist the mode switch)
-  await page.evaluate(() => { const el = [...document.querySelectorAll("button")].find((x) => x.innerText.includes("Full dine-in")); if (el) el.click(); });
-  await sleep(800);
 
   // B4. Billing — no INVINV duplication (input values show single prefix)
   await tabClick("Billing");

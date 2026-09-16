@@ -68,7 +68,24 @@ const loginLimiter = rateLimit({
     }
 });
 
+// OTP endpoints: 10 requests / 15 min per IP (send + verify combined). Stops
+// OTP-guessing and email-bombing from a single origin; per-email caps and the
+// 60s resend cooldown live in the verification service itself.
+const otpLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: isExcludedPath,
+    message: {
+        success: false,
+        message:
+            "Too many verification attempts. Please try again later."
+    }
+});
+
 module.exports = {
     apiLimiter,
-    loginLimiter
+    loginLimiter,
+    otpLimiter
 };

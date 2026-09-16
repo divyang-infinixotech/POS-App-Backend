@@ -86,6 +86,28 @@ async function verifyWebhookSignature(rawBody, signature) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+/**
+ * Payment amount validation (pure — unit-tested).
+ *
+ * Razorpay webhook payment entities carry the captured `amount` in paise.
+ * The only amount ever trusted is the one the BACKEND stored when the order
+ * was created from the plan's yearly price. A captured payment whose amount
+ * does not equal that stored amount can never activate a subscription or an
+ * onboarding application — the frontend/plan price on the client is never
+ * consulted for this comparison.
+ *
+ * @param {number|string} paidPaise  amount reported by the gateway (paise)
+ * @param {number|string} expectedINR amount stored on the SubscriptionPayment
+ * @returns {boolean}
+ */
+function razorpayPaiseMatches(paidPaise, expectedINR) {
+  const paid = Number(paidPaise);
+  const expectedPaise = Math.round(Number(expectedINR) * 100);
+  if (!Number.isFinite(paid) || !Number.isFinite(expectedPaise)) return false;
+  if (expectedPaise <= 0) return false; // a zero/negative stored amount is never a valid target
+  return paid === expectedPaise;
+}
+
 /** Current expiry anchor for renewals/upgrades (never goes backwards). */
 function computeBaseExpiry(subscription) {
   const now = new Date();
@@ -287,6 +309,7 @@ module.exports = {
   createRazorpayOrder,
   verifyPaymentSignature,
   verifyWebhookSignature,
+  razorpayPaiseMatches,
   computeBaseExpiry,
   activateSubscriptionPayment,
 };

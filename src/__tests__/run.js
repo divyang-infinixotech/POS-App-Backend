@@ -33,7 +33,10 @@ function check(condition, message) {
 }
 
 function eq(actual, expected, label) {
-  const pass = actual === expected;
+  // Deep equality: arrays/objects compared by JSON value, primitives by ===.
+  // ([] === [] is false under strict equality, which produced false failures.)
+  const norm = (v) => (v !== null && typeof v === "object" ? JSON.stringify(v) : v);
+  const pass = norm(actual) === norm(expected);
   process.stdout.write(pass ? "  ✅ " : "  ❌ ");
   console.log(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
   pass ? results.pass++ : results.fail++;
@@ -427,6 +430,134 @@ check(
 );
 
 // ═══════════════════════════════════════════════
+//  9c. PRINTER ROUTE AUTHORIZATION (Phase 4)
+//  Printer configuration is ADMIN/SUPER_ADMIN only. Print-DATA endpoints are
+//  role-gated: bill data / reprint are billing-capable roles; KOT print data is
+//  ADMIN/MANAGER/KITCHEN. No authenticated role can reach another tenant's
+//  printer settings — the tenant Prisma client + restaurantId from the JWT are
+//  the only scoping inputs (verified live in qa/phase4-print-rbac-qa.js).
+// ═══════════════════════════════════════════════
+
+section("9c. PRINTER ROUTE AUTHORIZATION");
+
+const readPrinterRoutesSrc = fs.readFileSync(
+  path.join(process.cwd(), "src/routes/printer.routes.js"),
+  "utf8"
+);
+// Isolate ONE route block (from the nearest preceding `router.` to the `;` that
+// ends the handler call) and assert the gate line sits between them.
+const printerRouteGate = (pathFragment, gateLine) => {
+  const fragIdx = readPrinterRoutesSrc.indexOf('"' + pathFragment + '"');
+  if (fragIdx === -1) return false;
+  const start = readPrinterRoutesSrc.lastIndexOf("router.", fragIdx);
+  const end = readPrinterRoutesSrc.indexOf(";", fragIdx);
+  if (start === -1 || end === -1) return false;
+  const route = readPrinterRoutesSrc.slice(start, end);
+  return route.includes(gateLine);
+};
+
+sub("Printer settings — ADMIN / SUPER_ADMIN only (configuration is not staff-editable)");
+const settingsBlock = (method) =>
+  !!readPrinterRoutesSrc.match(
+    new RegExp(`router\\.${method}\\\(\\s*\\"/settings\\",[\\s\\S]*?saveSettings|getSettings[\\s\\S]*?\\);?`)
+  );
+check(
+  readPrinterRoutesSrc.includes('router.post("\r\n    \"/settings\"') || /router\.post\(\s*"\/settings",[\s\S]*?authorize\("ADMIN", "SUPER_ADMIN"\)/.test(readPrinterRoutesSrc),
+  "POST /api/printer/settings restricted to ADMIN/SUPER_ADMIN"
+);
+check(
+  /router\.get\(\s*"\/settings",[\s\S]*?authorize\("ADMIN", "SUPER_ADMIN"\)/.test(readPrinterRoutesSrc),
+  "GET /api/printer/settings restricted to ADMIN/SUPER_ADMIN"
+);
+
+sub("Printer print-DATA endpoints — role-gated (Phase 4 fix)");
+check(
+  printerRouteGate("/bill/:id", "authorize(...BILLING_ROLES)"),
+  "GET /api/printer/bill/:id uses authorize(...BILLING_ROLES)"
+);
+check(
+  printerRouteGate("/kot/:id", 'authorize("ADMIN", "MANAGER", "KITCHEN")'),
+  "GET /api/printer/kot/:id uses authorize(ADMIN, MANAGER, KITCHEN)"
+);
+check(
+  printerRouteGate("/reprint/:id", "authorize(...BILLING_ROLES)"),
+  "GET /api/printer/reprint/:id uses authorize(...BILLING_ROLES)"
+);
+
+sub("Billing print/reprint API surface — KITCHEN and WAITER denied at the route layer");
+const paymentRoutesSrc2 = fs.readFileSync(
+  path.join(process.cwd(), "src/routes/payment.routes.js"),
+  "utf8"
+);
+check(
+  billingGate(paymentRoutesSrc2.match(/router\.post\(\s*"\/:id\/reprint",[\s\S]*?reprintReceipt[\s\S]*?\);/)),
+  "POST /api/payments/:id/reprint uses authorize(...BILLING_ROLES)"
+);
+check(
+  billingGate(paymentRoutesSrc2.match(/router\.post\(\s*"\/:id\/print",[\s\S]*?markPrinted[\s\S]*?\);/)),
+  "POST /api/payments/:id/print uses authorize(...BILLING_ROLES)"
+);
+check(
+  billingGate(paymentRoutesSrc2.match(/router\.post\(\s*"\/:id\/email",[\s\S]*?emailReceipt[\s\S]*?\);/)),
+  "POST /api/payments/:id/email uses authorize(...BILLING_ROLES)"
+);
+
+sub("KOT reprint — ADMIN/MANAGER only (kitchen reads tickets, never reprints via API)");
+const readKotRoutesSrc = fs.readFileSync(
+  path.join(process.cwd(), "src/routes/kot.routes.js"),
+  "utf8"
+);
+const kotReprintBlock = readKotRoutesSrc.match(/router\.get\(\s*"\/reprint\/:id",[\s\S]*?reprintKOT[\s\S]*?\);/);
+check(
+  !!kotReprintBlock && /authorize\("ADMIN", "MANAGER"\)/.test(kotReprintBlock[0]),
+  "GET /api/kot/reprint/:id restricted to ADMIN/MANAGER"
+);
+const kotReprintByOrderBlock = readKotRoutesSrc.match(/router\.get\(\s*"\/reprint-by-order\/:orderId",[\s\S]*?reprintKOTByOrder[\s\S]*?\);/);
+check(
+  !!kotReprintByOrderBlock && /authorize\("ADMIN", "MANAGER"\)/.test(kotReprintByOrderBlock[0]),
+  "GET /api/kot/reprint-by-order/:orderId restricted to ADMIN/MANAGER"
+);
+
+sub("Printer tenant isolation — service derives tenant from authenticated user only");
+const printerServiceSrc = fs.readFileSync(
+  path.join(process.cwd(), "src/services/printer.service.js"),
+  "utf8"
+);
+check(
+  printerServiceSrc.includes("tenantDb") && !/req\.body\.restaurantId/.test(printerServiceSrc),
+  "printer.service never trusts a client-supplied restaurantId (tenantPrisma + JWT only)"
+);
+check(
+  /savePrinterSettings\s*=\s*async\s*\(restaurantId, data, tenantDb\)/.test(printerServiceSrc),
+  "savePrinterSettings scoped by authenticated restaurantId + tenant client"
+);
+const printerControllerSrc = fs.readFileSync(
+  path.join(process.cwd(), "src/controllers/printer.controller.js"),
+  "utf8"
+);
+check(
+  !/req\.body\.restaurantId/.test(printerControllerSrc),
+  "printer.controller never reads a client-supplied restaurantId"
+);
+
+sub("Printer failure handling — payment/order transaction is never coupled to printing");
+const paymentControllerSrc = fs.readFileSync(
+  path.join(process.cwd(), "src/controllers/payment.controller.js"),
+  "utf8"
+);
+// collectPayment's transaction contains bill/payment/order updates ONLY — no
+// printer call inside the transaction, so a printer failure can never roll back
+// a successful payment.
+check(
+  !/tx\.printer|printerSetting.*increment|\.print\(\)/.test(paymentControllerSrc),
+  "collectPayment transaction contains no printer operation (print failure cannot roll back payment)"
+);
+check(
+  !/print/.test(paymentControllerSrc.match(/prisma\.\$transaction\(async \(tx\) => \{[\s\S]*?return \{ bill, payments: createdPayments \};/)?.[0] || ""),
+  "No print call inside the collect-payment transaction"
+);
+
+// ═══════════════════════════════════════════════
 //  10. EDGE CASE SCENARIOS
 // ═══════════════════════════════════════════════
 
@@ -757,10 +888,75 @@ eq(await verifyPaymentSignature({ orderId: null, paymentId: "p", signature: "s" 
   // Idempotent activation itself (status already PAID → no-op) is covered by
   // qa/webhook-activation-test.js against the live DB + real crypto path.
 
+  sub("Test 18 — payment AMOUNT validation (webhook never trusts the captured amount)");
+  const { razorpayPaiseMatches } = require("../services/razorpay.service");
+  // Yearly plan price ₹24,990 → order/row amount 24990 INR → 2499000 paise.
+  eq(razorpayPaiseMatches(2499000, 24990), true, "Exact match (2499000 paise = ₹24,990) → accepted");
+  eq(razorpayPaiseMatches(2499000, 24990.0), true, "Decimal INR amount normalizes (24990.0)");
+  eq(razorpayPaiseMatches(2499000, "24990"), true, "String INR amount accepted");
+  eq(razorpayPaiseMatches("2499000", 24990), true, "String paise amount accepted");
+  eq(razorpayPaiseMatches(2499100, 24990), false, "Overpaid by ₹1 → rejected");
+  eq(razorpayPaiseMatches(2498900, 24990), false, "Underpaid by ₹1 → rejected");
+  eq(razorpayPaiseMatches(1, 24990), false, "Token payment (1 paise) → rejected");
+  eq(razorpayPaiseMatches(0, 24990), false, "Zero captured → rejected");
+  eq(razorpayPaiseMatches(null, 24990), false, "Missing gateway amount → rejected (fail closed)");
+  eq(razorpayPaiseMatches(undefined, 24990), false, "Undefined gateway amount → rejected");
+  eq(razorpayPaiseMatches("not-a-number", 24990), false, "Non-numeric gateway amount → rejected");
+  eq(razorpayPaiseMatches(2499000, 0), false, "Stored amount 0 → never a valid activation target");
+  eq(razorpayPaiseMatches(2499000, null), false, "Missing stored amount → rejected (fail closed)");
+  eq(razorpayPaiseMatches(2499, 24.99), true, "₹24.99 exact paise boundary (2499 paise)");
+  eq(razorpayPaiseMatches(2500, 24.994), false, "₹24.994 rounds to 2499 paise ≠ 2500 → rejected");
+
   // ── Test cases 16 (successful payment), 18 (multi-tenant isolation),
   //    19 (CASHIER authorization) and 20 (Super Admin visibility) are live
   //    E2E checks — see qa/webhook-activation-test.js, qa/qa-run.js and
   //    qa/subscription-qa.js, which run against the real backend + PostgreSQL.
+
+  // ═══════════════════════════════════════════════
+  //  14. STAFF ORDER-TYPE ASSIGNMENT (Takeaway vs Dine In / Floor)
+  //  Reuses tenant UserPermission rows (orders.takeaway / orders.dine_in).
+  //  No assignment rows → unrestricted. ADMIN/MANAGER never restricted.
+  // ═══════════════════════════════════════════════
+
+  section("14. STAFF ORDER-TYPE ASSIGNMENT");
+
+  const {
+    assignedOrderTypesFromRows,
+    orderTypeAccessError,
+  } = require("../utils/orderAccess");
+
+  sub("assignedOrderTypesFromRows — takeaway grant extraction");
+  eq(assignedOrderTypesFromRows(null), [], "no rows → [] (DINE_IN only)");
+  eq(assignedOrderTypesFromRows([]), [], "empty rows → [] (DINE_IN only)");
+  eq(assignedOrderTypesFromRows([{ permissionKey: 'orders.takeaway', enabled: true }]).join(','), 'TAKEAWAY', "takeaway row → ['TAKEAWAY']");
+  eq(assignedOrderTypesFromRows([{ permissionKey: 'orders.dine_in', enabled: true }]), [], "legacy dine_in row → [] (Dine In implicit, row ignored)");
+  eq(assignedOrderTypesFromRows([
+    { permissionKey: 'orders.takeaway', enabled: true },
+    { permissionKey: 'orders.dine_in', enabled: true },
+  ]).join(','), 'TAKEAWAY', "both rows → ['TAKEAWAY'] (legacy dine_in ignored)");
+  eq(assignedOrderTypesFromRows([{ permissionKey: 'orders.takeaway', enabled: false }]), [], "disabled takeaway row → [] (DINE_IN only)");
+
+  sub("orderTypeAccessError — Dine In default + Takeaway grant enforcement");
+  // Mock tenantDb: userPermission.findMany resolves from a per-user map.
+  const makeDb = (rowsByUser) => ({
+    userPermission: { findMany: async ({ where }) => rowsByUser[where.userId] || [] },
+  });
+
+  eq(await orderTypeAccessError(makeDb({}), { id: 1, role: 'WAITER' }, 'DINE_IN'), null, "no grant → DINE_IN allowed (default for all staff)");
+  eq(await orderTypeAccessError(makeDb({}), { id: 1, role: 'WAITER' }, 'TAKEAWAY') !== null, true, "no grant → TAKEAWAY rejected (403)");
+  eq(await orderTypeAccessError(makeDb({}), { id: 1, role: 'ADMIN' }, 'TAKEAWAY'), null, "ADMIN never restricted");
+  eq(await orderTypeAccessError(makeDb({}), { id: 1, role: 'MANAGER' }, 'TAKEAWAY'), null, "MANAGER never restricted");
+  eq(await orderTypeAccessError(makeDb({}), { id: 1, role: 'SUPER_ADMIN' }, 'DINE_IN'), null, "SUPER_ADMIN never restricted");
+  eq(await orderTypeAccessError(makeDb({ 1: [{ permissionKey: 'orders.takeaway', enabled: true }] }), { id: 1, role: 'WAITER' }, 'TAKEAWAY'), null, "Takeaway grant → TAKEAWAY allowed");
+  eq(await orderTypeAccessError(makeDb({ 1: [{ permissionKey: 'orders.takeaway', enabled: true }] }), { id: 1, role: 'WAITER' }, 'DINE_IN'), null, "Takeaway grant → DINE_IN still allowed (default)");
+  eq(await orderTypeAccessError(makeDb({ 1: [{ permissionKey: 'orders.dine_in', enabled: true }] }), { id: 1, role: 'WAITER' }, 'TAKEAWAY') !== null, true, "legacy dine_in row only → TAKEAWAY still rejected (row ignored)");
+  eq(await orderTypeAccessError(makeDb({ 1: [{ permissionKey: 'orders.dine_in', enabled: true }] }), { id: 1, role: 'WAITER' }, 'DINE_IN'), null, "legacy dine_in row only → DINE_IN allowed");
+  eq(await orderTypeAccessError(makeDb({ 1: [{ permissionKey: 'orders.takeaway', enabled: false }] }), { id: 1, role: 'CASHIER' }, 'TAKEAWAY') !== null, true, "disabled takeaway row → TAKEAWAY rejected");
+  eq(await orderTypeAccessError(null, { id: 1, role: 'WAITER' }, 'TAKEAWAY'), null, "missing tenantDb → fail open (route middleware already guards)");
+
+  sub("updateUserFloorAssignments — payload validation constants");
+  const { ORDER_TYPE_TAKEAWAY_KEY } = require("../utils/orderAccess");
+  eq(ORDER_TYPE_TAKEAWAY_KEY, 'orders.takeaway', "takeaway permission key constant");
 
   // ═══════════════════════════════════════════════
   //  SUMMARY

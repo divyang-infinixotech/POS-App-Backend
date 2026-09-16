@@ -11,6 +11,8 @@ const {
   getPlans, getPlanModules, createPlan, updatePlan, togglePlanActive, duplicatePlan, deletePlan,
   getPlatformReports, getPlatformSettings, updatePlatformSetting, updatePlatformSettings, getAuditLogs, getSupportTickets, updateSupportTicket, getPlatformNotifications,
   getGatewayStatus, saveGatewayConfig, testGateway, toggleGateway, getPaymentMetrics, listPayments,
+  getEmailSettings, updateEmailSettings, verifyEmailSettings, sendTestEmailHandler,
+  getEmailLogs, resendEmailHandler, retryEmailQueueHandler,
 } = require("../controllers/super-admin.controller");
 
 const { createRestaurantSchema, updateRestaurantSchema, createUserSchema, createPlanSchema, updatePlanSchema, changePlanSchema } = require("../validators/super-admin.validator");
@@ -18,6 +20,12 @@ const { createRestaurantSchema, updateRestaurantSchema, createUserSchema, create
 const {
   docUpload, uploadDocument, getDocuments, verifyDocument, rejectDocument, deleteDocument,
   createPolicyAgreement, getPolicyAgreements,
+  getBusinessApplications, getBusinessApplication, getReviewMode, setReviewMode,
+  approveBusinessApplication, rejectBusinessApplication, downloadRestaurantDocument,
+  // Manual payment flow (new simplified onboarding) — QR generation removed:
+  // payment is verified manually, no checkout/QR is ever exposed.
+  getManualApplications, getManualApplication, markManualPaymentReceived,
+  approveManualApplication, rejectManualApplication,
 } = require("../controllers/super-admin.controller");
 
 // All routes require authentication + SUPER_ADMIN role
@@ -40,9 +48,30 @@ router.patch("/restaurants/:id/status", updateRestaurantStatus);
 router.get("/restaurants/:id/login-as", getRestaurantLoginAs);
 router.delete("/restaurants/:id", deleteRestaurant);
 
+// ─── Self-serve Business Applications (new-user onboarding) ───
+// Order matters: literal segments (review-mode) before :id routes.
+router.get("/business-applications", getBusinessApplications);
+router.get("/business-applications/review-mode", getReviewMode);
+router.put("/business-applications/review-mode", setReviewMode);
+router.get("/business-applications/:id", getBusinessApplication);
+router.post("/business-applications/:id/approve", approveBusinessApplication);
+router.post("/business-applications/:id/reject", rejectBusinessApplication);
+
+// ─── Manual Payment Applications (new simplified onboarding flow) ─────────────
+router.get("/manual-applications", getManualApplications);
+router.get("/manual-applications/:id", getManualApplication);
+// NOTE: GET /manual-applications/:id/qr (Generate Payment QR) was removed —
+// the approval flow is fully manual: Super Admin verifies the payment
+// reference and uses "Mark Payment Received"; no QR/checkout is generated.
+router.post("/manual-applications/:id/mark-payment", markManualPaymentReceived);
+router.post("/manual-applications/:id/approve", approveManualApplication);
+router.post("/manual-applications/:id/reject", rejectManualApplication);
+
 // ─── Restaurant Documents ───
 router.post("/restaurants/:id/documents", docUpload.single("file"), uploadDocument);
 router.get("/restaurants/:id/documents", getDocuments);
+// Authorized document download (documents are never served from public /uploads)
+router.get("/restaurants/:id/documents/:documentId/download", downloadRestaurantDocument);
 router.patch("/restaurants/:id/documents/:documentId/verify", verifyDocument);
 router.patch("/restaurants/:id/documents/:documentId/reject", rejectDocument);
 router.delete("/restaurants/:id/documents/:documentId", deleteDocument);
@@ -93,6 +122,15 @@ router.get("/reports", getPlatformReports);
 // ─── Settings ───
 router.get("/settings", getPlatformSettings);
 router.put("/settings", updatePlatformSettings);
+
+// ─── Email settings + delivery log (SUPER_ADMIN only — route-level authorize) ───
+router.get("/email/settings", getEmailSettings);
+router.put("/email/settings", updateEmailSettings);
+router.post("/email/verify", verifyEmailSettings);
+router.post("/email/test", sendTestEmailHandler);
+router.get("/email/logs", getEmailLogs);
+router.post("/email/logs/:id/resend", resendEmailHandler);
+router.post("/email/queue/retry", retryEmailQueueHandler);
 
 // ─── Audit Logs ───
 router.get("/audit-logs", getAuditLogs);

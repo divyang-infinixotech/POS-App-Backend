@@ -4,3 +4,7 @@ node_modules
 
 /generated/prisma
 logs/
+# Runtime / QA log output must never be committed
+*.log
+# Generated email template previews (npm run email:preview)
+email-previews/

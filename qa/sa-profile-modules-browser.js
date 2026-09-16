@@ -34,6 +34,8 @@ async function api(method, path, body, token) {
   const plan = await api("POST", "/super-admin/plans", {
     code: `QABROW${suffix}`, name: `QA Browser ${suffix}`, yearlyPrice: 100, billingCycle: "YEARLY",
     modules: AVAILABLE.filter((k) => k !== "reports").map((k) => ({ moduleKey: k, enabled: true })),
+    // The feature gate reads plan.features — the real plan form sends both.
+    features: AVAILABLE.filter((k) => k !== "reports"),
   }, saToken);
   const planId = plan.data?.data?.id;
 
@@ -50,7 +52,8 @@ async function api(method, path, body, token) {
   // restaurant to Hybrid (the mode where POS Ordering is legitimately visible)
   // before the sidebar assertion.
   const adminLogin = await api("POST", "/auth/login", { email: `qa-brow-admin-${suffix}@test.com`, password: "SubPass@123" });
-  const adminToken = adminLogin.data?.token;
+  const adminToken = adminLogin.token || adminLogin.data?.token; // /auth/login returns token at top level
+  check(!!adminToken, "QA restaurant admin token obtained (for hybrid preset)");
   if (adminToken) {
     await api("POST", "/settings", { restaurantName: `QA Browser R ${suffix}`, businessMode: "hybrid", enablePosOrdering: true }, adminToken);
   }
@@ -58,6 +61,10 @@ async function api(method, path, body, token) {
   // ── Browser ──
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: "new" });
   const page = await browser.newPage();
+  // Desktop viewport: below Tailwind's lg (1024px) the sidebar collapses to an
+  // icon rail and NAV LABELS never render — text-based sidebar checks would be
+  // meaningless at the 800x600 default.
+  await page.setViewport({ width: 1440, height: 900 });
   // Desktop width so sidebar text labels render (below lg the nav collapses to
   // an icon rail — tablet behavior is covered by the viewport-audit suite).
   await page.setViewport({ width: 1366, height: 768, deviceScaleFactor: 1 });
@@ -67,17 +74,30 @@ async function api(method, path, body, token) {
 
   const login = async (email, password) => {
     // Fresh session per login — never carry the previous user's token.
+    // localStorage can only be cleared on a REAL origin (about:blank throws
+    // SecurityError), so load the app first, clear, then reload for a clean
+    // boot without the previous session.
     await page.goto(BASE, { waitUntil: "networkidle2" });
     await page.evaluate(() => localStorage.clear());
     await page.goto(BASE, { waitUntil: "networkidle2" });
     await sleep(1500);
-    const inputs = await page.$$("input");
-    if (inputs.length >= 2) {
-      await inputs[0].click({ clickCount: 3 }); await inputs[0].type(email);
-      await inputs[1].click({ clickCount: 3 }); await inputs[1].type(password);
-      await page.evaluate(() => { const b = [...document.querySelectorAll("button")].find((x) => /sign in|login|log in/i.test(x.innerText)); if (b) b.click(); });
+    // Target the login form by its placeholders (generic input indexing is
+    // fragile when extra inputs exist).
+    const emailInput = (await page.$('input[placeholder="Enter email or user ID"]')) || (await page.$$("input"))[0];
+    const pwInput = (await page.$('input[placeholder="Enter password"]')) || (await page.$$("input"))[1];
+    if (emailInput && pwInput) {
+      await emailInput.click({ clickCount: 3 }); await emailInput.type(email);
+      await pwInput.click({ clickCount: 3 }); await pwInput.type(password);
+      await page.evaluate(() => { const b = [...document.querySelectorAll("button")].find((x) => /sign in|log in/i.test(x.innerText)); if (b) b.click(); });
     }
-    await sleep(4000);
+    // Poll until the login form is gone and an authenticated shell renders.
+    for (let i = 0; i < 40; i++) {
+      const stillOnLogin = (await page.$('input[placeholder="Enter password"]')) !== null;
+      const t = await bodyText();
+      if (!stillOnLogin && /dashboard|portal|overview/i.test(t)) break;
+      await sleep(500);
+    }
+    await sleep(1500);
   };
   const clickText = async (pattern) => {
     await page.evaluate((src) => {
@@ -122,8 +142,24 @@ async function api(method, path, body, token) {
   const newName = `QA SA ${suffix}`;
   const nameInput = (await page.$$(".fixed.inset-0.z-50 input"))[0];
   if (nameInput) {
-    await nameInput.click({ clickCount: 3 });
+    // React-safe replace: select ALL via keyboard, then type. A triple-click
+    // selection can be lost to a re-render, which makes typing APPEND to the
+    // existing value (it corrupted the profile name in earlier runs).
+    await nameInput.click();
+    await page.keyboard.down("Control");
+    await page.keyboard.press("a");
+    await page.keyboard.up("Control");
     await nameInput.type(newName);
+    // Verify the field really holds only the new name before saving.
+    const typed = await page.evaluate(() => (document.querySelector(".fixed.inset-0.z-50 input") || {}).value || "");
+    if (typed.trim() !== newName) {
+      await page.evaluate((v) => {
+        const el = document.querySelector(".fixed.inset-0.z-50 input");
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+        setter.call(el, v);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }, newName);
+    }
   }
   await page.evaluate(() => { const b = [...document.querySelectorAll(".fixed.inset-0.z-50 button")].find((x) => /save changes/i.test(x.innerText)); if (b) b.click(); });
   await sleep(2500);
@@ -142,8 +178,20 @@ async function api(method, path, body, token) {
   await sleep(800);
   const nameInput2 = (await page.$$(".fixed.inset-0.z-50 input"))[0];
   if (nameInput2) {
-    await nameInput2.click({ clickCount: 3 });
+    await nameInput2.click();
+    await page.keyboard.down("Control");
+    await page.keyboard.press("a");
+    await page.keyboard.up("Control");
     await nameInput2.type("Super Admin");
+    const typed2 = await page.evaluate(() => (document.querySelector(".fixed.inset-0.z-50 input") || {}).value || "");
+    if (typed2.trim() !== "Super Admin") {
+      await page.evaluate((v) => {
+        const el = document.querySelector(".fixed.inset-0.z-50 input");
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+        setter.call(el, v);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }, "Super Admin");
+    }
   }
   await page.evaluate(() => { const b = [...document.querySelectorAll(".fixed.inset-0.z-50 button")].find((x) => /save changes/i.test(x.innerText)); if (b) b.click(); });
   await sleep(2500);
@@ -168,12 +216,13 @@ async function api(method, path, body, token) {
   check(AVAILABLE.map((k) => k.replace(/_/g, " ")).every((name) => true), "module catalog loaded (backend-driven)");
   const gone = REMOVED.filter((label) => new RegExp(label, "i").test(planText));
   check(gone.length === 0, `no fake/placeholder modules in Create Plan (${gone.length ? gone.join(", ") : "none found"})`);
-  // Count the module toggle buttons inside the module grid
+  // Count the module toggle rows inside the module grid (label-wrapped
+  // checkboxes with the canonical module label text).
   const moduleToggleCount = await page.evaluate(() => {
-    const labels = [...document.querySelectorAll("button")]
-      .map((b) => (b.innerText || "").trim())
-      .filter((t) => /^(Dashboard|POS Ordering|Billing & Payments|Floor Management|Table Management|Kitchen \(KOT\)|Active Orders|Menu & Stock|Customers|Staff|Reports & Sales|POS Settings)$/i.test(t));
-    return labels.length;
+    const re = /^(Dashboard|POS Ordering|Billing & Payments|Floor Management|Table Management|Kitchen \(KOT\)|Active Orders|Menu & Stock|Customers|Staff|Reports & Sales|Settings)$/i;
+    return [...document.querySelectorAll("label")]
+      .filter((l) => re.test((l.innerText || "").trim()) && l.querySelector("input[type=checkbox]"))
+      .length;
   });
   check(moduleToggleCount === 12, `exactly 12 available module toggles rendered (got ${moduleToggleCount})`);
   await page.evaluate(() => { const b = [...document.querySelectorAll("button")].find((x) => /^cancel$/i.test(x.innerText.trim())); if (b) b.click(); });
@@ -183,8 +232,13 @@ async function api(method, path, body, token) {
   await login(`qa-brow-admin-${suffix}@test.com`, "SubPass@123");
   const restText = await bodyText();
   check(!/reports & sales/i.test(restText), "sidebar hides Reports & Sales for a plan without reports");
-  check(/pos ordering/i.test(restText), "sidebar still shows POS Ordering (enabled module)");
-
+  const posOk = /pos ordering/i.test(restText);
+  if (!posOk) {
+    console.log("  [diag] body:", restText.replace(/\n+/g, " | ").slice(0, 400));
+  }
+  check(posOk, "sidebar still shows POS Ordering (enabled module)");
+  // Print console errors for diagnostics
+  consoleErrors.slice(0, 5).forEach((e) => console.log("  console:", e.slice(0, 200)));
   check(consoleErrors.length === 0, `zero console errors (${consoleErrors.length})`);
 
   await browser.close();

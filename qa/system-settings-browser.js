@@ -122,8 +122,17 @@ async function api(method, path, body, token) {
     const ins = await page.$$("input");
     const el = ins[idx];
     if (!el) return false;
-    await el.click({ clickCount: 3 });
-    await el.type(value);
+    // React-safe replace: native value setter + input event. Triple-click
+    // selection can be lost to a re-render, making type() APPEND (it corrupted
+    // platform_name in earlier runs → false persistence failures).
+    await page.evaluate((i, v) => {
+      const el2 = [...document.querySelectorAll("input")][i];
+      if (!el2) return;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(el2, v);
+      el2.dispatchEvent(new Event("input", { bubbles: true }));
+    }, idx, String(value));
+    await sleep(150);
     return true;
   };
 

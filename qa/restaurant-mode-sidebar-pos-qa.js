@@ -160,11 +160,14 @@ async function setDbSetting(token, patch) {
   hasPos = await sidebarHasTitle("Reports & Sales");
   check(hasPos, "Restaurant mode: Reports & Sales still in sidebar");
 
-  // ══ 2. RESTAURANT MODE — SETTINGS PAGE HAS NO POS ORDERING CONTROLS ══
+  // ══ 2. RESTAURANT MODE — SETTINGS PAGE MODE-SCOPED CONTROLS ══
+  // 'Enable POS Ordering Screen' is a generic screen toggle visible in ALL
+  // business modes (unless plan-locked); counter-only 'Quick Billing' stays
+  // hidden in restaurant mode.
   await nav("POS Settings");
   await tabClick("POS Screen Settings");
   n = await countText("Enable POS Ordering Screen");
-  check(n === 0, `Restaurant mode: settings has no 'Enable POS Ordering Screen' (found ${n})`);
+  check(n > 0, `Restaurant mode: settings shows 'Enable POS Ordering Screen' toggle (found ${n})`);
   n = await countText("Enable Basic POS Quick Billing");
   check(n === 0, `Restaurant mode: settings has no 'Enable Basic POS Quick Billing' (found ${n})`);
   n = await countText("Enable Kitchen (KOT)");
@@ -173,11 +176,13 @@ async function setDbSetting(token, patch) {
   check(n > 0, `Restaurant mode: Floor Management toggle present (found ${n})`);
 
   // ══ 3. SEARCH RESPECTS MODE ══
+  // 'Enable POS Ordering Screen' is visible in restaurant mode → its section
+  // surfaces; counter-only 'Quick Billing' must never surface.
   await setSearch("POS Ordering");
   let searchSections = await page.evaluate(() => {
     return [...document.querySelectorAll("button")].filter((x) => /POS Screen Settings|POS Config/i.test(x.innerText)).length;
   });
-  check(searchSections === 0, "Search 'POS Ordering' in Restaurant mode → no matching section (found " + searchSections + ")");
+  check(searchSections > 0, "Search 'POS Ordering' in Restaurant mode → POS Screen Settings surfaces (found " + searchSections + ")");
 
   await setSearch("Quick Billing");
   searchSections = await page.evaluate(() => {
@@ -192,29 +197,15 @@ async function setDbSetting(token, patch) {
   check(searchSections > 0, "Search 'Kitchen' in Restaurant mode → POS Screen Settings surfaces (found " + searchSections + ")");
   await setSearch("");
 
-  // ══ 4. LIVE MODE SWITCHING — Restaurant → Hybrid → Basic POS → Restaurant ══
-  // Hybrid: POS Ordering + restaurant controls both appear
-  await clickMode("Both dine-in and counter sales");
-  n = await countText("Enable POS Ordering Screen");
-  check(n > 0, "Hybrid mode: 'Enable POS Ordering Screen' appears (found " + n + ")");
-  n = await countText("Enable Kitchen (KOT)");
-  check(n > 0, "Hybrid mode: Kitchen (KOT) still appears (found " + n + ")");
-
-  // Basic POS: POS Ordering + Quick Billing appear; floor management hidden
-  await clickMode("Quick billing, no tables/KOT/active orders");
-  n = await countText("Enable POS Ordering Screen");
-  check(n > 0, "Basic POS mode: 'Enable POS Ordering Screen' appears (found " + n + ")");
-  n = await countText("Enable Basic POS Quick Billing");
-  check(n > 0, "Basic POS mode: 'Enable Basic POS Quick Billing' appears (found " + n + ")");
-  n = await countText("Enable Floor Management");
-  check(n === 0, "Basic POS mode: floor management hidden (found " + n + ")");
-
-  // Back to Restaurant: POS Ordering disappears again, no stale rows
-  await clickMode("Full dine-in with tables, KOT, Active Orders");
-  n = await countText("Enable POS Ordering Screen");
-  check(n === 0, "Restaurant mode (back): 'Enable POS Ordering Screen' absent again (found " + n + ")");
-  n = await countText("Enable Basic POS Quick Billing");
-  check(n === 0, "Restaurant mode (back): 'Enable Basic POS Quick Billing' absent again (found " + n + ")");
+  // ══ 4. NO IN-APP MODE SWITCHING (plan-driven business mode) ══
+  // The old mode-switcher cards must not exist anywhere — business mode comes
+  // from the subscription plan and is read-only in the UI.
+  n = await countText("Quick billing, no tables/KOT/active orders");
+  check(n === 0, `No Basic-POS switcher card in DOM (found ${n})`);
+  n = await countText("Both dine-in and counter sales");
+  check(n === 0, `No Hybrid switcher card in DOM (found ${n})`);
+  n = await countText("Full dine-in with tables, KOT, Active Orders");
+  check(n === 0, `No Restaurant switcher card in DOM (found ${n})`);
 
   // ══ 5. PERSISTENCE — save restaurant mode, refresh, verify ══
   await page.evaluate(() => { const b = [...document.querySelectorAll("button")].find((x) => /^Save Settings$/i.test(x.innerText.trim())); if (b) b.click(); });
@@ -228,7 +219,9 @@ async function setDbSetting(token, patch) {
   await nav("POS Settings");
   await tabClick("POS Screen Settings");
   n = await countText("Enable POS Ordering Screen");
-  check(n === 0, "After refresh: Restaurant mode still hides POS Ordering settings (found " + n + ")");
+  check(n > 0, "After refresh: Restaurant mode still shows POS Ordering toggle (found " + n + ")");
+  n = await countText("Enable Basic POS Quick Billing");
+  check(n === 0, "After refresh: Restaurant mode still hides Quick Billing (found " + n + ")");
 
   // Sidebar still hides POS Ordering after refresh
   await nav("Dashboard Overview");

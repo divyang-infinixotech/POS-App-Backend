@@ -15,7 +15,135 @@ const {
   getGatewayStatus, getGatewayConfig, saveGatewayConfig, setGatewayEnabled,
   getPaymentMetrics, listAllPayments,
 } = require("../services/gateway-admin.service");
+const onboardingService = require("../services/onboarding.service");
+const { isValidEmail } = require("../utils/email");
 const jwt = require("jsonwebtoken");
+const {
+  getEmailStatus,
+  saveEmailConfig,
+  verifySmtp,
+  sendTestEmail,
+  setGeneralEmailEnabled,
+} = require("../config/email.config");
+const {
+  resendEmailLog,
+  processEmailQueue,
+} = require("../services/email.service");
+const { platformPrisma: prisma } = require("../config/tenantPrisma");
+
+// ─── Email settings (SUPER_ADMIN only — route-level authorize enforces this) ──
+const getEmailSettings = async (req, res) => {
+  try {
+    const data = await getEmailStatus();
+    return successResponse(res, data, "Email settings fetched successfully");
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+const updateEmailSettings = async (req, res) => {
+  try {
+    const body = req.body || {};
+    // generalNotificationsEnabled alone toggles only the notification switch —
+    // email VERIFICATION stays mandatory regardless (separate concern).
+    if (body.generalNotificationsEnabled !== undefined && Object.keys(body).length === 1) {
+      await setGeneralEmailEnabled(!!body.generalNotificationsEnabled);
+      return successResponse(res, await getEmailStatus(), "Email notifications setting updated");
+    }
+    const saved = await saveEmailConfig(body);
+    // Audit the change — never include the SMTP password (masked anyway).
+    try {
+      await createAuditLog({
+        userId: req.user.id,
+        module: "SETTINGS",
+        action: "UPDATE",
+        description: "Email (SMTP) configuration updated by Super Admin",
+        ipAddress: req.ip,
+        userAgent: req.headers["user-agent"],
+      }, prisma);
+    } catch (_) { /* non-critical */ }
+    return successResponse(res, await getEmailStatus(), "Email settings saved successfully");
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+const verifyEmailSettings = async (req, res) => {
+  try {
+    const result = await verifySmtp();
+    return successResponse(res, result, result.ok ? "SMTP connection verified" : "SMTP verification failed");
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+const sendTestEmailHandler = async (req, res) => {
+  try {
+    const to = req.body && req.body.to;
+    const result = await sendTestEmail(to);
+    if (!result.ok) return errorResponse(res, result.error, 400);
+    try {
+      await createAuditLog({
+        userId: req.user.id,
+        module: "SETTINGS",
+        action: "CREATE",
+        description: "Test email sent to " + to,
+        ipAddress: req.ip,
+        userAgent: req.headers["user-agent"],
+      }, prisma);
+    } catch (_) { /* non-critical */ }
+    return successResponse(res, result, "Test email sent successfully");
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+// ─── Email delivery log (queue visibility) ───
+const getEmailLogs = async (req, res) => {
+  try {
+    const page = Math.max(1, Number(req.query.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 25)));
+    const where = {};
+    if (req.query.status) where.status = String(req.query.status);
+    if (req.query.to) where.to = { contains: String(req.query.to).toLowerCase() };
+    const [rows, total] = await Promise.all([
+      prisma.emailLog.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true, to: true, template: true, subject: true, status: true,
+          attempts: true, maxAttempts: true, lastError: true, sentAt: true,
+          failedAt: true, createdAt: true, updatedAt: true,
+        },
+      }),
+      prisma.emailLog.count({ where }),
+    ]);
+    return successResponse(res, { logs: rows, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } }, "Email logs fetched successfully");
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+const resendEmailHandler = async (req, res) => {
+  try {
+    const row = await resendEmailLog(req.params.id);
+    return successResponse(res, { id: row.id, status: row.status }, row.status === "SENT" ? "Email resent successfully" : "Resend failed — it will be retried automatically");
+  } catch (error) {
+    const status = error.statusCode || 500;
+    return errorResponse(res, error.message, status);
+  }
+};
+
+const retryEmailQueueHandler = async (req, res) => {
+  try {
+    const processed = await processEmailQueue(50);
+    return successResponse(res, { processed }, `Processed ${processed} queued email(s)`);
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
 
 const dashboard = async (req, res) => {
   try {
@@ -54,8 +182,8 @@ const updateOwnProfile = async (req, res) => {
       return errorResponse(res, "Name must be at least 2 characters", 400);
     }
     if (cleanEmail !== undefined) {
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-        return errorResponse(res, "A valid email address is required", 400);
+      if (!isValidEmail(cleanEmail)) {
+        return errorResponse(res, "Please enter a valid email address.", 400);
       }
       const dup = await prismaDb.user.findUnique({ where: { email: cleanEmail } });
       if (dup && dup.id !== req.user.id) {
@@ -192,7 +320,13 @@ const updateUserHandler = async (req, res) => {
 const resetUserPassword = async (req, res) => {
   try {
     const data = await adminResetPassword(req.params.id);
-    return successResponse(res, data, "Password reset successfully");
+    // NOTE: the response never contains the password — the user receives it
+    // by email only. The message reflects delivery so the SA knows whether to
+    // use Resend Credentials in Email Settings.
+    const message = data.emailQueued
+      ? "Temporary password generated and emailed to the user."
+      : "Temporary password generated, but the email could not be queued. Use Resend Credentials in Email Settings.";
+    return successResponse(res, data, message);
   } catch (error) {
     return errorResponse(res, error.message);
   }
@@ -412,7 +546,7 @@ const listPaymentsHandler = async (req, res) => {
 
 const getPlans = async (req, res) => {
   try {
-    const data = await listPlans(req.query);
+    const data = await listPlans(req.query); // query includes businessMode filter
     return successResponse(res, data, "Plans fetched successfully");
   } catch (error) {
     return errorResponse(res, error.message);
@@ -727,6 +861,179 @@ const getPolicyAgreementsHandler = async (req, res) => {
   }
 };
 
+// ─── Self-serve business applications (review + approval) ───
+
+/** GET /super-admin/business-applications — self-serve applications list. */
+const getBusinessApplications = async (req, res) => {
+  try {
+    const data = await onboardingService.listApplications(req.query);
+    return successResponse(res, data, "Business applications fetched successfully");
+  } catch (error) {
+    return errorResponse(res, error.message, error.statusCode || 500);
+  }
+};
+
+/** GET /super-admin/business-applications/:id — full application detail. */
+const getBusinessApplication = async (req, res) => {
+  try {
+    const data = await onboardingService.applicationDetail(req.params.id);
+    const review = await onboardingService.getReviewMode();
+    return successResponse(res, { ...data, reviewMode: review.mode }, "Business application fetched successfully");
+  } catch (error) {
+    return errorResponse(res, error.message, error.statusCode || 500);
+  }
+};
+
+/** GET /super-admin/business-applications/review-mode — current review mode. */
+const getReviewModeHandler = async (req, res) => {
+  try {
+    const data = await onboardingService.getReviewMode();
+    return successResponse(res, data, "Document review mode");
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+/** PUT /super-admin/business-applications/review-mode — auto | manual. */
+const setReviewModeHandler = async (req, res) => {
+  try {
+    const mode = req.body && req.body.mode;
+    if (mode !== "auto" && mode !== "manual") return errorResponse(res, "mode must be 'auto' or 'manual'", 400);
+    const data = await onboardingService.setReviewMode(mode);
+    await createAuditLog({
+      userId: req.user.id,
+      module: "SETTINGS",
+      action: "UPDATE",
+      description: "Business application review mode set to " + mode,
+      ipAddress: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
+    return successResponse(res, data, "Review mode updated");
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+/** POST /super-admin/business-applications/:id/approve — provision + activate. */
+const approveBusinessApplication = async (req, res) => {
+  try {
+    const data = await onboardingService.approveApplication(
+      req.params.id,
+      req.user.id,
+      { ipAddress: req.ip, userAgent: req.headers["user-agent"] }
+    );
+    return successResponse(res, data, data.alreadyActive ? "Application is already active" : "Application approved and activated");
+  } catch (error) {
+    return errorResponse(res, error.message, error.statusCode || 500);
+  }
+};
+
+/** POST /super-admin/business-applications/:id/reject — requires a reason. */
+const rejectBusinessApplication = async (req, res) => {
+  try {
+    const reason = (req.body && (req.body.reason || req.body.rejectionReason)) || "";
+    const data = await onboardingService.rejectApplication(
+      req.params.id,
+      reason,
+      req.user.id,
+      { ipAddress: req.ip, userAgent: req.headers["user-agent"] }
+    );
+    return successResponse(res, data, "Application rejected");
+  } catch (error) {
+    return errorResponse(res, error.message, error.statusCode || 500);
+  }
+};
+
+// ─── Manual payment applications (Super Admin) ───────────────────────────────
+
+/** GET /super-admin/manual-applications — list manual payment applications. */
+const getManualApplications = async (req, res) => {
+  try {
+    const data = await onboardingService.listManualApplications(req.query);
+    return successResponse(res, data, "Manual payment applications fetched successfully");
+  } catch (error) {
+    return errorResponse(res, error.message, error.statusCode || 500);
+  }
+};
+
+/** GET /super-admin/manual-applications/:id — get manual payment application detail. */
+const getManualApplication = async (req, res) => {
+  try {
+    const data = await onboardingService.getManualApplicationDetail(req.params.id);
+    // paymentQRConfig intentionally omitted — the approval screen must not
+    // offer QR generation; payment verification is a manual Super Admin action.
+    return successResponse(res, { ...data, paymentQRConfig: null }, "Manual payment application fetched successfully");
+  } catch (error) {
+    return errorResponse(res, error.message, error.statusCode || 500);
+  }
+};
+
+/** POST /super-admin/manual-applications/:id/mark-payment — mark payment received. */
+const markManualPaymentReceived = async (req, res) => {
+  try {
+    const data = await onboardingService.markPaymentReceived(
+      req.params.id,
+      req.user.id,
+      { ...req.body, _ip: req.ip, _ua: req.headers["user-agent"] }
+    );
+    return successResponse(res, data, "Payment verified successfully");
+  } catch (error) {
+    return errorResponse(res, error.message, error.statusCode || 500);
+  }
+};
+
+/** POST /super-admin/manual-applications/:id/approve — approve manual payment application. */
+const approveManualApplicationHandler = async (req, res) => {
+  try {
+    const data = await onboardingService.approveManualApplication(
+      req.params.id,
+      req.user.id,
+      { ipAddress: req.ip, userAgent: req.headers["user-agent"] }
+    );
+    return successResponse(res, data, data.alreadyActive ? "Application is already active" : "Application approved and activated");
+  } catch (error) {
+    return errorResponse(res, error.message, error.statusCode || 500);
+  }
+};
+
+/** POST /super-admin/manual-applications/:id/reject — reject manual payment application. */
+const rejectManualApplicationHandler = async (req, res) => {
+  try {
+    const reason = (req.body && (req.body.reason || req.body.rejectionReason)) || "";
+    const data = await onboardingService.rejectManualApplication(
+      req.params.id,
+      reason,
+      req.user.id,
+      { ipAddress: req.ip, userAgent: req.headers["user-agent"] }
+    );
+    return successResponse(res, data, "Application rejected");
+  } catch (error) {
+    return errorResponse(res, error.message, error.statusCode || 500);
+  }
+};
+
+/**
+ * GET /super-admin/manual-applications/:id/qr — REMOVED.
+ * The approval workflow must not expose QR generation: payment is verified
+ * manually (Mark Payment Received) before approval. generatePaymentQR remains
+ * an internal service function but is no longer routed from anywhere.
+ */
+
+/** GET /super-admin/restaurants/:id/documents/:documentId/download (authorized). */
+const downloadRestaurantDocument = async (req, res) => {
+  try {
+    const doc = await onboardingService.getOwnedDocument(req.params.id, req.params.documentId);
+    const filePath = onboardingService.resolveDocumentFilePath(doc);
+    const safeName = String(doc.originalFileName || "document").replace(/[^\w.\- ]+/g, "").slice(0, 100);
+    res.setHeader("Content-Type", doc.mimeType || "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="${safeName || "document"}"`);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    return res.sendFile(filePath);
+  } catch (error) {
+    return errorResponse(res, error.message, error.statusCode || 500);
+  }
+};
+
 module.exports = {
   dashboard, getOwnProfile, updateOwnProfile, getRestaurants, createRestaurant: createRestaurantHandler, onboardingCreateRestaurant, getRestaurant, updateRestaurant: updateRestaurantHandler, updateRestaurantStatus, deleteRestaurant, getRestaurantLoginAs,
   getUsers, createUser: createUserHandler, updateUser: updateUserHandler, resetUserPassword, toggleUserStatus, deleteUser: deleteUserHandler, changeUserRole,
@@ -738,4 +1045,11 @@ module.exports = {
   docUpload, uploadDocument: uploadDocumentHandler, getDocuments: getDocumentsHandler,
   verifyDocument: verifyDocumentHandler, rejectDocument: rejectDocumentHandler, deleteDocument: deleteDocumentHandler,
   createPolicyAgreement: createPolicyAgreementHandler, getPolicyAgreements: getPolicyAgreementsHandler,
+  getBusinessApplications, getBusinessApplication, getReviewMode: getReviewModeHandler, setReviewMode: setReviewModeHandler,
+  approveBusinessApplication, rejectBusinessApplication, downloadRestaurantDocument,
+  // Manual payment flow
+  getManualApplications, getManualApplication, markManualPaymentReceived, approveManualApplication: approveManualApplicationHandler, rejectManualApplication: rejectManualApplicationHandler,
+  // Email settings + delivery log (SUPER_ADMIN only)
+  getEmailSettings, updateEmailSettings, verifyEmailSettings, sendTestEmailHandler,
+  getEmailLogs, resendEmailHandler, retryEmailQueueHandler,
 };

@@ -15,15 +15,30 @@ const { generateSchemaName } = require("../config/tenantPrisma");
 
 /**
  * Split a multi-statement SQL string into individual statements.
- * Correctly handles PostgreSQL $$ dollar-quoting so DO blocks stay intact.
- * Semicolons inside $$ ... $$ are never treated as statement separators.
+ * Correctly handles PostgreSQL $$ dollar-quoting so DO blocks stay intact,
+ * and skips `--` line comments so semicolons inside comment text (e.g.
+ * "-- authoritative; legacy isVeg boolean") are never treated as statement
+ * separators (which would truncate the following DO block → SQL 42601).
  */
 function splitSQL(sql) {
   const stmts = [];
   let current = '';
   let inDollarQuote = false;
+  let inLineComment = false;
   for (let i = 0; i < sql.length; i++) {
     const ch = sql[i];
+    if (inLineComment) {
+      // Inside a `--` comment: copy verbatim until end of line; `;` is inert.
+      current += ch;
+      if (ch === '\n' || ch === '\r') inLineComment = false;
+      continue;
+    }
+    if (ch === '-' && sql[i + 1] === '-') {
+      inLineComment = true;
+      current += '--';
+      i++;
+      continue;
+    }
     if (ch === '$' && sql[i + 1] === '$') {
       inDollarQuote = !inDollarQuote;
       current += '$$';
@@ -161,6 +176,24 @@ DO $$ BEGIN
   CREATE TYPE "UserRole" AS ENUM ('ADMIN', 'MANAGER', 'CASHIER', 'WAITER', 'KITCHEN', 'SUPER_ADMIN');
 EXCEPTION WHEN duplicate_object THEN null;
 END $$;
+
+-- Per-staff dietary access (Part 6: effective access = restaurant mode ∩ staff access)
+DO $$ BEGIN
+  CREATE TYPE "DietaryAccess" AS ENUM ('VEG_ONLY', 'VEG_AND_NON_VEG');
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+-- Restaurant-level dietary mode (upper boundary for all staff, incl. ADMIN)
+DO $$ BEGIN
+  CREATE TYPE "DietaryMode" AS ENUM ('VEG_ONLY', 'VEG_AND_NON_VEG');
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+-- Menu item dietary type (authoritative; legacy isVeg boolean kept in sync)
+DO $$ BEGIN
+  CREATE TYPE "DietaryType" AS ENUM ('VEG', 'NON_VEG');
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
 `;
 
 /**
@@ -190,10 +223,21 @@ CREATE TABLE IF NOT EXISTS "User" (
   "passwordChangedAt" TIMESTAMP,
   "deletedAt" TIMESTAMP,
   "restaurantId" INTEGER,
+  -- Force-password-change flag for temporary credentials (mirrors public.User).
+  "mustChangePassword" BOOLEAN NOT NULL DEFAULT false,
+  -- Dietary access for this staff member (VEG_ONLY | VEG_AND_NON_VEG)
+  "dietaryAccess" "DietaryAccess" DEFAULT 'VEG_AND_NON_VEG',
   "createdAt" TIMESTAMP DEFAULT NOW(),
   "updatedAt" TIMESTAMP DEFAULT NOW(),
   UNIQUE(email)
 );
+
+-- Case-insensitive email identity: staff emails are stored lowercase and this
+-- functional unique index guarantees "CASHIER@RESTAURANT.COM" can never become
+-- a second account beside "cashier@restaurant.com", even if a code path skips
+-- normalization. Existing schemas get the same index via
+-- scripts/fix-tenant-email-index.js.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_email_lower ON "User" (lower(email));
 
 -- Restaurant Settings (1:1 with restaurant)
 CREATE TABLE IF NOT EXISTS "RestaurantSetting" (
@@ -232,6 +276,7 @@ CREATE TABLE IF NOT EXISTS "RestaurantSetting" (
   "enableMenu" BOOLEAN DEFAULT true,
   "enableStock" BOOLEAN DEFAULT true,
   "enableActiveOrders" BOOLEAN DEFAULT true,
+  "enableStaffRoster" BOOLEAN DEFAULT true,
   "enableTableReservations" BOOLEAN DEFAULT false,
   "autoPrintBill" BOOLEAN DEFAULT false,
   "autoPrintKOT" BOOLEAN DEFAULT false,
@@ -240,6 +285,8 @@ CREATE TABLE IF NOT EXISTS "RestaurantSetting" (
   "askCustomerBeforePrint" BOOLEAN DEFAULT false,
   "autoReleaseTable" BOOLEAN DEFAULT true,
   "enablePosOrdering" BOOLEAN DEFAULT true,
+  "barcodeScannerEnabled" BOOLEAN DEFAULT false, -- Part 11: tenant Barcode Scanner toggle (plan entitlement still applies first)
+  "dietaryMode" "DietaryMode" DEFAULT 'VEG_AND_NON_VEG', -- restaurant-level max dietary mode (upper boundary for staff access)
   "posLayout" TEXT DEFAULT 'basic',
   "businessMode" TEXT DEFAULT 'restaurant',
   "enableCounterSale" BOOLEAN DEFAULT false,
@@ -264,6 +311,17 @@ CREATE TABLE IF NOT EXISTS "Floor" (
   "updatedAt" TIMESTAMP DEFAULT NOW(),
   UNIQUE("restaurantId", name)
 );
+
+-- Staff-to-floor assignment (many-to-many; see Prisma UserFloorAssignment)
+CREATE TABLE IF NOT EXISTS "UserFloorAssignment" (
+  id SERIAL PRIMARY KEY,
+  "userId" INTEGER NOT NULL,
+  "floorId" INTEGER NOT NULL,
+  "createdAt" TIMESTAMP DEFAULT NOW(),
+  UNIQUE("userId", "floorId")
+);
+CREATE INDEX IF NOT EXISTS idx_ufa_user ON "UserFloorAssignment"("userId");
+CREATE INDEX IF NOT EXISTS idx_ufa_floor ON "UserFloorAssignment"("floorId");
 
 -- Restaurant Tables
 CREATE TABLE IF NOT EXISTS "RestaurantTable" (
@@ -318,6 +376,9 @@ CREATE TABLE IF NOT EXISTS "MenuItem" (
   "displayOrder" INTEGER DEFAULT 0,
   "spicyLevel" INTEGER DEFAULT 0,
   "isVeg" BOOLEAN DEFAULT true,
+  -- Dietary type — authoritative value (migrated from isVeg; isVeg kept for
+  -- backward compatibility with existing reports/printers).
+  "dietaryType" "DietaryType" DEFAULT 'VEG',
   "isAvailable" BOOLEAN DEFAULT true,
   "isFeatured" BOOLEAN DEFAULT false,
   "isRecommended" BOOLEAN DEFAULT false,
@@ -327,10 +388,36 @@ CREATE TABLE IF NOT EXISTS "MenuItem" (
   "modifierOptions" TEXT,
   unit TEXT DEFAULT 'piece',
   "categoryId" INTEGER NOT NULL,
+  "subcategoryId" INTEGER,
   "restaurantId" INTEGER NOT NULL,
   "createdAt" TIMESTAMP DEFAULT NOW(),
   "updatedAt" TIMESTAMP DEFAULT NOW(),
   UNIQUE("restaurantId", sku)
+);
+
+-- Subcategories (Category → Subcategory → MenuItem hierarchy)
+CREATE TABLE IF NOT EXISTS "Subcategory" (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  "isActive" BOOLEAN DEFAULT true,
+  "sortOrder" INTEGER DEFAULT 0,
+  "categoryId" INTEGER NOT NULL,
+  "restaurantId" INTEGER NOT NULL,
+  "createdAt" TIMESTAMP DEFAULT NOW(),
+  "updatedAt" TIMESTAMP DEFAULT NOW(),
+  UNIQUE("restaurantId", "categoryId", name)
+);
+
+-- Per-staff permission overrides (absent row = use role default)
+CREATE TABLE IF NOT EXISTS "UserPermission" (
+  id SERIAL PRIMARY KEY,
+  "userId" INTEGER NOT NULL,
+  "permissionKey" TEXT NOT NULL,
+  "enabled" BOOLEAN DEFAULT true,
+  "createdAt" TIMESTAMP DEFAULT NOW(),
+  "updatedAt" TIMESTAMP DEFAULT NOW(),
+  UNIQUE("userId", "permissionKey")
 );
 
 -- Customers
@@ -369,6 +456,8 @@ CREATE TABLE IF NOT EXISTS "Order" (
   "roundOff" DOUBLE PRECISION DEFAULT 0,
   notes TEXT,
   "cancelReason" TEXT,
+  -- Staff attribution: the authenticated user who placed the order (JWT-derived).
+  "userId" INTEGER,
   "tableId" INTEGER,
   "customerId" INTEGER,
   "isDeleted" BOOLEAN DEFAULT false,
@@ -601,6 +690,13 @@ CREATE INDEX IF NOT EXISTS idx_menuitem_available ON "MenuItem"("isAvailable");
 CREATE INDEX IF NOT EXISTS idx_menuitem_sku ON "MenuItem"(sku);
 CREATE INDEX IF NOT EXISTS idx_menuitem_barcode ON "MenuItem"(barcode);
 CREATE INDEX IF NOT EXISTS idx_menuitem_veg ON "MenuItem"("isVeg");
+CREATE INDEX IF NOT EXISTS idx_menuitem_dietary ON "MenuItem"("dietaryType");
+CREATE INDEX IF NOT EXISTS idx_menuitem_subcategory ON "MenuItem"("subcategoryId");
+CREATE INDEX IF NOT EXISTS idx_subcategory_restaurant ON "Subcategory"("restaurantId");
+CREATE INDEX IF NOT EXISTS idx_subcategory_category ON "Subcategory"("categoryId");
+CREATE INDEX IF NOT EXISTS idx_subcategory_active ON "Subcategory"("isActive");
+CREATE INDEX IF NOT EXISTS idx_userpermission_user ON "UserPermission"("userId");
+CREATE INDEX IF NOT EXISTS idx_userpermission_key ON "UserPermission"("permissionKey");
 CREATE INDEX IF NOT EXISTS idx_customer_restaurant ON "Customer"("restaurantId");
 CREATE INDEX IF NOT EXISTS idx_customer_phone ON "Customer"(phone);
 CREATE INDEX IF NOT EXISTS idx_customer_email ON "Customer"(email);

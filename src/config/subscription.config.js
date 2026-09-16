@@ -26,8 +26,8 @@ const PLAN_FEATURES = {
   settings:       { label: "Settings",                icon: "settings" },
   printers:       { label: "Printer Management",      icon: "printer" },
   qr_ordering:    { label: "QR Ordering",             icon: "qr-code" },
-  api_access:     { label: "API Access",              icon: "code" },
-  multi_terminal: { label: "Multi-Terminal",          icon: "monitor" },
+  api_access:     { label: "API Access",              icon: "code" },  multi_terminal: { label: "Multi-Terminal",      icon: "monitor" },
+  barcode_scanner: { label: "Barcode Scanner",      icon: "scan-barcode" },
 };
 
 // NOTE: This catalog intentionally mirrors the PlanModule rows in the database
@@ -75,11 +75,49 @@ const AVAILABLE_RESTAURANT_MODULES = [
   "staff",
   "reports",
   "settings",
+  "barcode_scanner",
 ];
+
+// ─── Business-mode capability map (SINGLE authoritative source) ─────────────
+// Modules that only make sense with a full restaurant workflow (floors,
+// tables, kitchen/KOT). A BASIC_POS plan can never carry them — the plan
+// editor hides them and the backend strips them from every create/update
+// payload, so no client can attach a Restaurant-only module to a Basic plan.
+// Everything else in AVAILABLE_RESTAURANT_MODULES applies to both modes.
+const RESTAURANT_ONLY_MODULES = ["floors", "tables", "kitchen"];
+
+/**
+ * Modules selectable for a plan/business mode.
+ * businessMode: "RESTAURANT" | "BASIC_POS" (unknown → RESTAURANT superset is
+ * NOT granted; unknown falls back to BASIC_POS to stay restrictive).
+ */
+function modulesForBusinessMode(businessMode) {
+  const mode = String(businessMode || "BASIC_POS").toUpperCase();
+  if (mode === "RESTAURANT") return [...AVAILABLE_RESTAURANT_MODULES];
+  return AVAILABLE_RESTAURANT_MODULES.filter((m) => RESTAURANT_ONLY_MODULES.indexOf(m) === -1);
+}
+
+/**
+ * Filter an arbitrary modules/features payload down to what the given plan
+ * mode allows. Used by plan create/update so the DB can never hold a Basic
+ * plan with restaurant-only entitlements.
+ */
+function filterModulesForBusinessMode(items, businessMode) {
+  const allowed = modulesForBusinessMode(businessMode);
+  if (!Array.isArray(items)) return [];
+  return items
+    .filter((item) => {
+      const key = typeof item === "string" ? item : item && item.moduleKey;
+      return allowed.indexOf(key) !== -1;
+    });
+}
 
 module.exports = {
   PLAN_FEATURES,
   FEATURE_SETTINGS_MAP,
   DEFAULT_FEATURES,
   AVAILABLE_RESTAURANT_MODULES,
+  RESTAURANT_ONLY_MODULES,
+  modulesForBusinessMode,
+  filterModulesForBusinessMode,
 };

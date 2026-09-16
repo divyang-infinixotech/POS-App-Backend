@@ -56,25 +56,26 @@ const errorHandler = (err, req, res, next) => {
             error: err.message,
             stack: err.stack?.split('\n').slice(0, 5).join('\n')
         });
-        // Return the actual error message in dev, sanitized in production
-        const devMessage = process.env.NODE_ENV === 'production'
-            ? "Internal Server Error"
-            : err.message || "Invalid request parameters";
+        // Part 29: never echo raw Prisma invocation details (source file paths,
+        // query internals, schema names) to ANY client — dev included. The full
+        // error is logged above; the response is a clean, safe 400.
         return res.status(400).json({
             success: false,
-            message: devMessage
+            message: "Invalid request parameters."
         });
     }
 
     const status = err.statusCode || 500;
 
-    // In production never echo raw internal error messages (Prisma details,
-    // filesystem paths, SQL) back to the client — the full error is logged
-    // above. Intentional 4xx business errors carry their own safe message.
-    if (status >= 500 && process.env.NODE_ENV === "production") {
+    // Part 29: sanitize 5xx messages in every environment — raw Prisma/SQL
+    // details, filesystem paths and schema names must never reach the client.
+    // Intentional 4xx business errors carry their own safe message.
+    if (status >= 500) {
         return res.status(status).json({
             success: false,
-            message: "Internal Server Error"
+            message: process.env.NODE_ENV === "production" || /Prisma|invocation|schema|SQL/i.test(err.message || "")
+                ? "Internal Server Error"
+                : err.message || "Internal Server Error"
         });
     }
 

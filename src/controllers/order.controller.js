@@ -1,5 +1,8 @@
 const { platformPrisma } = require("../config/tenantPrisma");
+const { dietaryItemError } = require("../utils/dietary");
 const { successResponse, errorResponse } = require("../utils/response");
+const { orderFloorScopeFor, orderFloorAccessError } = require("../utils/floorAccess");
+const { orderTypeAccessError } = require("../utils/orderAccess");
 const {
     generateOrderNumber
 } = require("../utils/numberGenerator");
@@ -41,6 +44,12 @@ const createOrder = async (req, res) => {
             items
 
         } = req.body;
+        // Order-type assignment (Takeaway vs Dine In / Floor): a staff member
+        // restricted to one order type cannot place the other — enforced
+        // server-side (frontend default selection is convenience only).
+        const _otErr = await orderTypeAccessError(prisma, req.user, orderType);
+        if (_otErr) return errorResponse(res, _otErr, 403);
+
         // Validate table belongs to current restaurant (skip for COUNTER_SALE)
         if (tableId && orderType !== "COUNTER_SALE") {
 
@@ -64,6 +73,14 @@ const createOrder = async (req, res) => {
 
                 );
 
+            }
+
+            // Floor-restricted staff cannot open orders on unassigned floors.
+            const { tableScopeFor, floorAccessDenied, getAssignedFloorIds } = require("../utils/floorAccess");
+            const _scope = await tableScopeFor(prisma, req.user);
+            if (_scope && table.floorId != null) {
+                const _ids = await getAssignedFloorIds(prisma, req.user.id, req.user.role);
+                if (!_ids.includes(table.floorId)) return floorAccessDenied(res);
             }
 
             if (table.status !== "AVAILABLE") {
@@ -103,6 +120,14 @@ const createOrder = async (req, res) => {
 
                 if (!menuItem.isAvailable) {
                     const err = new Error(`${menuItem.name} is unavailable`);
+                    err.statusCode = 400;
+                    throw err;
+                }
+
+                // Dietary access (Part 10): reject NON_VEG for VEG_ONLY staff.
+                const dietaryError = await dietaryItemError(req, menuItem);
+                if (dietaryError) {
+                    const err = new Error(dietaryError);
                     err.statusCode = 400;
                     throw err;
                 }
@@ -193,6 +218,10 @@ const createOrder = async (req, res) => {
                     orderNo: await generateOrderNumber(tx),
 
                     orderType,
+
+                    // Staff attribution is ALWAYS the authenticated user (JWT) —
+                    // any client-supplied serviceStaffId/waiter value is ignored.
+                    userId: req.user.id || null,
 
                     tableId,
 
@@ -436,6 +465,10 @@ const getActiveOrders = async (req, res) => {
             return successResponse(res, [], "Active orders fetched");
         }
 
+        // Floor-restricted staff (CASHIER/KITCHEN/WAITER with assignments) only
+        // see active orders on their assigned floors (Part 12). ADMIN/MANAGER and
+        // unassigned staff are restaurant-wide (unchanged behavior).
+        const _floorScope = await orderFloorScopeFor(prisma, req.user);
         const orders = await prisma.order.findMany({
             where: {
                 isDeleted: false,
@@ -445,7 +478,8 @@ const getActiveOrders = async (req, res) => {
                 // COUNTER_SALE orders are quick-billing only; never show in Active Orders
                 orderType: {
                     not: "COUNTER_SALE"
-                }
+                },
+                ...(_floorScope || {})
             },
             include: {
                 customer: true,
@@ -1043,6 +1077,14 @@ const changeTable = async (req, res) => {
 
         }
 
+        // Floor-restricted staff cannot transfer onto an unassigned floor.
+        const { tableScopeFor, floorAccessDenied, getAssignedFloorIds } = require("../utils/floorAccess");
+        const _tScope = await tableScopeFor(prisma, req.user);
+        if (_tScope && newTable.floorId != null) {
+            const _ids = await getAssignedFloorIds(prisma, req.user.id, req.user.role);
+            if (!_ids.includes(newTable.floorId)) return floorAccessDenied(res);
+        }
+
         if (newTable.status !== "AVAILABLE") {
 
             return errorResponse(
@@ -1259,6 +1301,12 @@ const updateOrder = async (req, res) => {
 
                 );
 
+            }
+
+            // Dietary access (Part 10): reject NON_VEG for VEG_ONLY staff.
+            const dietaryError = await dietaryItemError(req, menuItem);
+            if (dietaryError) {
+                return errorResponse(res, dietaryError, 400);
             }
 
             const lineSubtotal =
@@ -1538,23 +1586,19 @@ const addOrderItem = async (req, res) => {
 
         if (order.status === "CANCELLED") {
             return errorResponse(res, "Cannot add items to a cancelled order", 400);
-        }
-
-        if (order.bill) {
-
+        }        if (order.bill) {
             return errorResponse(
-
                 res,
-
                 "Cannot modify order after bill generation"
-
             );
-
         }
-
         if (order.status === "CANCELLED") {
             return errorResponse(res, "Cannot modify a cancelled order", 400);
         }
+
+        // Floor-restricted staff cannot add items to an order on an unassigned floor.
+        const _floorErr = await orderFloorAccessError(prisma, req.user, order);
+        if (_floorErr) return res.status(403).json({ success: false, message: _floorErr });
 
         const menuItem = await prisma.menuItem.findFirst({
 
@@ -1579,6 +1623,12 @@ const addOrderItem = async (req, res) => {
 
             );
 
+        }
+
+        // Dietary access (Part 10): reject NON_VEG for VEG_ONLY staff.
+        const dietaryError = await dietaryItemError(req, menuItem);
+        if (dietaryError) {
+            return errorResponse(res, dietaryError, 400);
         }
 
         if (!menuItem.isAvailable) {
@@ -1744,13 +1794,13 @@ const updateOrderItem = async (req, res) => {
 
             return errorResponse(
 
-                res,
-
-                "Cannot modify order after bill generation"
-
+                res,                "Cannot modify order after bill generation"
             );
-
         }
+
+        // Floor-restricted staff cannot edit items of an order on an unassigned floor.
+        const _floorErr = await orderFloorAccessError(prisma, req.user, order);
+        if (_floorErr) return res.status(403).json({ success: false, message: _floorErr });
 
         const orderItem = await prisma.orderItem.findFirst({
             where: {
@@ -1923,13 +1973,13 @@ const deleteOrderItem = async (req, res) => {
 
             return errorResponse(
 
-                res,
-
-                "Cannot modify order after bill generation"
-
+                res,                "Cannot modify order after bill generation"
             );
-
         }
+
+        // Floor-restricted staff cannot edit items of an order on an unassigned floor.
+        const _floorErr = await orderFloorAccessError(prisma, req.user, order);
+        if (_floorErr) return res.status(403).json({ success: false, message: _floorErr });
 
         const orderItem = await prisma.orderItem.findFirst({
 

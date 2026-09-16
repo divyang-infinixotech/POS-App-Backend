@@ -127,6 +127,18 @@ const deleteCategory = async (req, res) => {
       });
     }
 
+    // Data validation (Part 19): a category with subcategories cannot be
+    // deleted — that would orphan them. Move/delete the subcategories first.
+    const subcategoryCount = await req.tenantDb.subcategory.count({
+      where: { categoryId: category.id },
+    });
+    if (subcategoryCount > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete category. It still has ${subcategoryCount} subcategory(ies). Delete or move them first.`,
+      });
+    }
+
     await req.tenantDb.category.delete({
       where: { id: category.id }
     });

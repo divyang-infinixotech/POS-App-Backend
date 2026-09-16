@@ -17,6 +17,17 @@ function isSubscriptionSelfServiceRoute(url) {
 }
 
 /**
+ * Self-service routes a user with an unchanged temporary password may still
+ * reach: changing the password (the whole point) and the profile rehydration
+ * the frontend needs on boot. Everything else is refused until the temporary
+ * credential is replaced.
+ */
+function isPasswordChangeSelfServiceRoute(url) {
+  const path = String(url || "").split("?")[0];
+  return /^\/api\/auth\/(change-password|profile|verify-password)$/.test(path);
+}
+
+/**
  * Auth middleware that supports both public schema users (SUPER_ADMIN, ADMIN)
  * and tenant schema users (MANAGER, CASHIER, KITCHEN, WAITER).
  *
@@ -130,6 +141,53 @@ const protect = async (req, res, next) => {
           success: false,
           message: "Your password was changed. Please log in again.",
         });
+      }
+    }
+
+    // ── First-login forced password change (temporary credentials) ──
+    // Users provisioned by Super Admin (or password-reset by them) receive a
+    // one-time temporary password by email. Until they replace it, every route
+    // is refused except the self-service endpoints needed to change it. The
+    // flag exists only on public.User — the tenant User tables have no such
+    // column, so tenant staff resolve to undefined/falsy and pass through.
+    if (
+      user.mustChangePassword === true &&
+      !isPasswordChangeSelfServiceRoute(req.originalUrl || req.url)
+    ) {
+      return res.status(403).json({
+        success: false,
+        code: "PASSWORD_CHANGE_REQUIRED",
+        message:
+          "For security you must change your temporary password before continuing.",
+      });
+    }
+
+    // ── Onboarding session rehydration (ADMIN → /auth/profile only) ──
+    // A self-serve applicant (business registered but restaurant not ACTIVE
+    // yet) must be able to rehydrate their session on browser refresh. This
+    // carve-out is LIMITED to the /auth/profile self-service route — every
+    // other POS route below keeps refusing non-ACTIVE restaurants, so an
+    // onboarding account can never operate the POS before activation. The
+    // /api/onboarding/* endpoints use their own onboardingAuth middleware.
+    if (
+      isPlatformUser &&
+      user.role === "ADMIN" &&
+      isSubscriptionSelfServiceRoute(req.originalUrl || req.url)
+    ) {
+      const onboardingEligible =
+        !user.restaurantId ||
+        (user.restaurant &&
+          user.restaurant.selfServe &&
+          user.restaurant.status !== "ACTIVE");
+      if (onboardingEligible) {
+        req.user = {
+          id: user.id,
+          restaurantId: user.restaurantId || null,
+          role: user.role,
+          name: user.name,
+          email: user.email,
+        };
+        return next();
       }
     }
 

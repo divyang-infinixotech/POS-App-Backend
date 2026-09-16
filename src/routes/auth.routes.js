@@ -10,6 +10,7 @@ const router = express.Router();
 
 const {
   login,
+  register,
   changePassword,
   profile,
   verifyPassword
@@ -19,10 +20,21 @@ const protect = require(
   "../middleware/auth.middleware"
 );
 
-// NOTE: POST /auth/register was removed. It was a PUBLIC endpoint that let
-// anyone create a user (with any role, for any restaurantId) — a privilege
-// escalation hole. Account provisioning goes through the super-admin flow
-// (/super-admin/restaurants, /super-admin/users) instead.
+const validate = require("../middleware/validate.middleware");
+const { registerSchema } = require("../validators/onboarding.validator");
+
+// NOTE: This replaces the original POST /auth/register which was removed as a
+// privilege-escalation hole (it let anyone pick a role + restaurantId). The
+// new endpoint is SAFE: it only creates a role=ADMIN account with no
+// restaurantId, reads whitelisted fields only, and the resulting account has
+// no restaurant/subscription/tenant until the self-serve onboarding flow
+// (business details → documents → legal → plan → verified payment) completes.
+router.post(
+    "/register",
+    validate(registerSchema),
+    loginLimiter,
+    register
+);
 
 router.post(
     "/login",

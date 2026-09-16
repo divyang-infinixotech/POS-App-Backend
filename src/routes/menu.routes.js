@@ -16,6 +16,7 @@ const authorize =
 require("../middleware/role.middleware");
 const audit = require("../middleware/audit.middleware");
 const requireFeature = require("../middleware/feature.middleware");
+const { requirePermission } = require("../middleware/permission.middleware");
 
 const {
   createMenuItem,
@@ -26,7 +27,12 @@ const {
   toggleAvailability,
   duplicateMenuItem,
   uploadMenuItemImage,
-  deleteMenuItemImage
+  deleteMenuItemImage,
+  getMenuItemByBarcode,
+  getSubcategories,
+  createSubcategory,
+  updateSubcategory,
+  deleteSubcategory
 } = require("../controllers/menu.controller");
 
 // ─── Menu item image upload (multer in-memory → validated + processed server-side) ───
@@ -79,6 +85,7 @@ router.post(
     protect,
     authorize("ADMIN", "MANAGER"),
     requireFeature("menu"),
+    requirePermission("menu.create"),
     validate(createMenuSchema),
     audit(
         "MENU",
@@ -97,6 +104,73 @@ router.get(
   getMenuItems
 );
 
+// ─── Barcode lookup (Part 11) — MUST be registered BEFORE any /:id route
+// (same Express ordering rule as /subcategories). Plan entitlement comes from
+// requireFeature("barcode_scanner"); the restaurant's own scanner toggle is
+// enforced inside the controller chain below.
+router.get(
+  "/barcode/:barcode",
+  protect,
+  requireFeature("barcode_scanner"),
+  getMenuItemByBarcode
+);
+
+// ─── Subcategories (Part 15) — MUST be registered BEFORE any /:id route.
+// Express matches routes in registration order, so a literal path like
+// "/subcategories" registered after "/:id" would be captured as id="subcategories"
+// and routed into getMenuItemById (Prisma: Argument `id` is missing → 500).
+router.get(
+    "/subcategories",
+    protect,
+    requireFeature(["menu", "pos"]),
+    getSubcategories
+);
+
+router.post(
+    "/subcategories",
+    protect,
+    authorize("ADMIN", "MANAGER"),
+    requireFeature("menu"),
+    requirePermission("subcategory.manage"),
+    audit(
+        "MENU",
+        "CREATE",
+        (req) =>
+            `Created subcategory "${req.body.name}" under category ID ${req.body.categoryId}`
+    ),
+    createSubcategory
+);
+
+router.put(
+    "/subcategories/:id",
+    protect,
+    authorize("ADMIN", "MANAGER"),
+    requireFeature("menu"),
+    requirePermission("subcategory.manage"),
+    audit(
+        "MENU",
+        "UPDATE",
+        (req) =>
+            `Updated subcategory ID ${req.params.id}`
+    ),
+    updateSubcategory
+);
+
+router.delete(
+    "/subcategories/:id",
+    protect,
+    authorize("ADMIN", "MANAGER"),
+    requireFeature("menu"),
+    requirePermission("subcategory.manage"),
+    audit(
+        "MENU",
+        "DELETE",
+        (req) =>
+            `Deleted subcategory ID ${req.params.id}`
+    ),
+    deleteSubcategory
+);
+
 router.get(
   "/:id",
   protect,
@@ -109,6 +183,7 @@ router.put(
     protect,
     authorize("ADMIN", "MANAGER"),
     requireFeature("menu"),
+    requirePermission("menu.edit"),
     validate(updateMenuSchema),
     audit(
         "MENU",
@@ -151,6 +226,7 @@ router.delete(
     protect,
     authorize("ADMIN"),
     requireFeature("menu"),
+    requirePermission("menu.delete"),
     audit(
         "MENU",
         "DELETE",

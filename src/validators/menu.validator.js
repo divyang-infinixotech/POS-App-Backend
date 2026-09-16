@@ -26,6 +26,14 @@ const createMenuSchema = Joi.object({
 
     isVeg: Joi.boolean().default(true),
 
+    // Part 8/16: explicit dietary type. When absent, the controller falls back
+    // to isVeg (legacy compatibility). VEG keeps isVeg in sync server-side.
+    dietaryType: Joi.string().valid("VEG", "NON_VEG").optional(),
+
+    // Part 16: optional subcategory — must belong to categoryId (checked in
+    // the controller because it needs tenant data).
+    subcategoryId: Joi.number().integer().positive().allow(null).optional(),
+
     isAvailable: Joi.boolean().default(true),
 
     categoryId: Joi.number().required()
@@ -42,8 +50,12 @@ const updateMenuSchema = Joi.object({
     imagePublicId: Joi.string().allow("", null).optional(),
     price: Joi.number().positive().optional(),
     tax: Joi.number().min(0).optional(),
-    preparationTime: Joi.number().min(0).optional(),
-    isVeg: Joi.boolean().optional(),
+    preparationTime: Joi.number().min(0).optional(),    isVeg: Joi.boolean().optional(),
+
+    dietaryType: Joi.string().valid("VEG", "NON_VEG").optional(),
+
+    subcategoryId: Joi.number().integer().positive().allow(null).optional(),
+
     isAvailable: Joi.boolean().optional(),
     categoryId: Joi.number().optional(),
     currentStock: Joi.number().min(0).optional(),

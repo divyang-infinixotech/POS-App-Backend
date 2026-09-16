@@ -3,11 +3,11 @@ const express = require("express");
 const router = express.Router();
 
 const validate = require("../middleware/validate.middleware");
-const audit = require("../middleware/audit.middleware");
-
-const {
-    createUserSchema
+const audit = require("../middleware/audit.middleware");const {
+  createUserSchema
 } = require("../validators/user.validator");
+
+const { requirePermission } = require("../middleware/permission.middleware");
 
 const protect =
 require("../middleware/auth.middleware");
@@ -17,6 +17,7 @@ require("../middleware/role.middleware");
 
 const requireFeature =
 require("../middleware/feature.middleware");
+const requireModuleEnabled = require("../middleware/feature.middleware").requireModuleEnabled;
 
 const {
   createUser,
@@ -25,7 +26,14 @@ const {
   updateUser,
   changeStatus,
   changePassword,
-  deleteUser
+  deleteUser,
+  getUserPermissions,
+  getMyPermissions,
+  updateUserPermissions,
+  resetUserPermissions,
+  getUserFloorAssignments,
+  updateUserFloorAssignments,
+  getMyFloors
 } = require("../controllers/user.controller");
 
 router.post(
@@ -43,7 +51,7 @@ router.post(
     createUser
 );
 
-router.get("/", protect, authorize("ADMIN", "MANAGER", "SUPER_ADMIN"), requireFeature("staff"), getUsers);
+router.get("/", protect, authorize("ADMIN", "MANAGER", "SUPER_ADMIN"), requireFeature("staff"), requireModuleEnabled("enableStaffRoster", "Staff Roster"), getUsers);
 
 // Waiter directory used by the Take Order wizard — any role that can place
 // orders (ADMIN/MANAGER/CASHIER/WAITER) may list the ACTIVE WAITER staff of
@@ -56,6 +64,84 @@ router.get(
     authorize("ADMIN", "MANAGER", "CASHIER", "WAITER"),
     requireFeature(["pos", "active_orders"]),
     require("../controllers/user.controller").getWaiters
+);
+
+// ─── Per-staff permissions (tenant UserPermission; ADMIN-only management) ───
+// "me" routes MUST be registered before "/:id/..." so "me" is not captured as an ID.
+router.get(
+    "/me/permissions",
+    protect,
+    authorize("ADMIN", "MANAGER", "CASHIER", "KITCHEN", "WAITER", "SUPER_ADMIN"),
+    getMyPermissions
+);
+router.get(
+    "/:id/permissions",
+    protect,
+    authorize("ADMIN", "MANAGER", "SUPER_ADMIN"),
+    requireFeature("staff"),
+    getUserPermissions
+);
+
+// ─── Per-staff floor assignment (tenant UserFloorAssignment) ───
+// "me" route MUST be registered before "/:id/..." so "me" is not captured as an ID.
+// Floors & Tables read for the current user (restricted staff see only their floors).
+router.get(
+    "/me/floors",
+    protect,
+    authorize("ADMIN", "MANAGER", "CASHIER", "KITCHEN", "WAITER"),
+    requireFeature(["floors", "pos", "tables", "active_orders"]),
+    getMyFloors
+);
+router.get(
+    "/:id/floors",
+    protect,
+    authorize("ADMIN", "MANAGER", "SUPER_ADMIN"),
+    requireFeature("staff"),
+    getUserFloorAssignments
+);
+router.put(
+    "/:id/floors",
+    protect,
+    authorize("ADMIN", "SUPER_ADMIN"),
+    requireFeature("staff"),
+    requirePermission("staff.edit"),
+    audit(
+        "USER",
+        "UPDATE",
+        (req) =>
+            `Updated floor assignments for user ID ${req.params.id}`
+    ),
+    updateUserFloorAssignments
+);
+
+router.put(
+    "/:id/permissions",
+    protect,
+    authorize("ADMIN", "SUPER_ADMIN"),
+    requireFeature("staff"),
+    requirePermission("staff.edit"),
+    audit(
+        "USER",
+        "UPDATE",
+        (req) =>
+            `Updated screen/action permissions for user ID ${req.params.id}`
+    ),
+    updateUserPermissions
+);
+
+router.delete(
+    "/:id/permissions",
+    protect,
+    authorize("ADMIN", "SUPER_ADMIN"),
+    requireFeature("staff"),
+    requirePermission("staff.edit"),
+    audit(
+        "USER",
+        "UPDATE",
+        (req) =>
+            `Reset permissions to role defaults for user ID ${req.params.id}`
+    ),
+    resetUserPermissions
 );
 
 router.get("/:id", protect, authorize("ADMIN", "MANAGER", "SUPER_ADMIN"), requireFeature("staff"), getUserById);

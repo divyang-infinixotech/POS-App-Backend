@@ -1,5 +1,6 @@
 // tenantDb is available as req.tenantDb (attached by auth middleware)
 const { successResponse, errorResponse } = require("../utils/response");
+const { getAssignedFloorIds } = require("../utils/floorAccess");
 
 // ─── Get All Floors ────────────────────────────────────────────────────────────
 const getFloors = async (req, res) => {
@@ -7,11 +8,34 @@ const getFloors = async (req, res) => {
     if (!req.user.restaurantId) {
       return res.json({ success: true, floors: [] });
     }
+    // Floor-restricted staff (with assignments) see only their floors;
+    // ADMIN/MANAGER and unassigned staff see everything (unchanged).
+    const assignedIds = await getAssignedFloorIds(req.tenantDb, req.user.id, req.user.role);
+    const where = assignedIds === null ? {} : { id: { in: assignedIds.length ? assignedIds : [-1] } };
     const floors = await req.tenantDb.floor.findMany({
-      where: {},
+      where,
       orderBy: { sortOrder: "asc" },
     });
-    res.json({ success: true, floors });
+    // Attached assigned staff per floor (Part 11: light display only — id + name).
+    let assignments = [];
+    try {
+      assignments = await req.tenantDb.userFloorAssignment.findMany({
+        where: floors.length ? { floorId: { in: floors.map((f) => f.id) } } : { floorId: { in: [] } },
+        select: { floorId: true, user: { select: { id: true, name: true, role: true } } },
+      });
+    } catch (e) {
+      console.warn("[floors] assignment enrich skipped:", e.message);
+    }
+    const staffByFloor = new Map();
+    for (const a of assignments) {
+      if (!staffByFloor.has(a.floorId)) staffByFloor.set(a.floorId, []);
+      staffByFloor.get(a.floorId).push({ id: a.user.id, name: a.user.name, role: a.user.role });
+    }
+    const floorsWithStaff = floors.map((f) => ({
+      ...f,
+      assignedStaff: staffByFloor.get(f.id) || [],
+    }));
+    res.json({ success: true, floors: floorsWithStaff });
   } catch (error) {return errorResponse(res, error.message);}
 };
 
@@ -27,6 +51,11 @@ const getFloorById = async (req, res) => {
     });
     if (!floor) {
       return res.status(404).json({ success: false, message: "Floor not found" });
+    }
+    // Floor-restricted staff cannot fetch unassigned floors directly.
+    const _assigned = await getAssignedFloorIds(req.tenantDb, req.user.id, req.user.role);
+    if (_assigned !== null && !_assigned.includes(floor.id)) {
+      return res.status(403).json({ success: false, message: "You are not assigned to this floor." });
     }
     res.json({ success: true, floor });
   } catch (error) {return errorResponse(res, error.message);}

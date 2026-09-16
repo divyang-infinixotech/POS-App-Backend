@@ -101,23 +101,43 @@ const freshToken = async (email, password) => (await login(email, password)).dat
   const dbRest2 = await prisma.restaurant.findUnique({ where: { id: restId }, select: { status: true } });
   check(dbRest2.status === "INACTIVE", "status persisted in PostgreSQL");
 
+  // §3 needs an ACTIVE restaurant: staff (CASHIER etc.) can only be created in
+  // ACTIVE tenants (adminCreateUser rejects non-ACTIVE restaurants by design).
+  const reactivateForStaff = await api("PATCH", `/super-admin/restaurants/${restId}/status`, { status: "ACTIVE" }, saToken);
+  check(reactivateForStaff.status === 200, `restaurant re-activated for staff creation → ${reactivateForStaff.status}`);
+
   // ── §3 USER: create → toggle → reset → delete, persistence + DB ──
+  // SA user management manages PLATFORM users (ADMIN/SUPER_ADMIN in public.User).
+  // Tenant staff (CASHIER etc.) are created by SA into the restaurant TENANT
+  // schema and are managed from the Staff Roster — SA toggle/reset/delete are
+  // public-schema-only by design (see adminChangeUserRole comment).
   section("§3 SA USER management persistence");
+  const { getTenantClient } = require("../src/config/tenantPrisma");
+  const tenantDb = getTenantClient(`restaurant_${restId}`);
   const uEmail = `qa-full-u-${suffix}@test.com`;
-  const uCreate = await api("POST", "/super-admin/users", { restaurantId: restId, name: "QA Full User", email: uEmail, password: "UserPass@123", role: "CASHIER" }, saToken);
+  const uCreate = await api("POST", "/super-admin/users", { restaurantId: restId, name: "QA Full User", email: uEmail, password: "UserPass@123", role: "ADMIN" }, saToken);
   const userId = uCreate.data?.data?.id || uCreate.data?.user?.id;
-  check(!!userId, `user created (id=${userId}, ${uCreate.status})`);
+  check(!!userId, `platform ADMIN created (id=${userId}, ${uCreate.status})`);
   const t4 = await freshToken(SA_EMAIL, SA_PASS);
   const uRead = await api("GET", "/super-admin/users", { page: 1, limit: 200, search: uEmail }, t4);
   check((uRead.data?.data?.users || []).some((u) => u.email === uEmail), "user visible after refresh");
-  const dbUser = await prisma.user.findUnique({ where: { email: uEmail }, select: { role: true, isActive: true } });
-  check(dbUser.role === "CASHIER" && dbUser.isActive, "PostgreSQL has the user");
+  const dbUser = await prisma.user.findUnique({ where: { email: uEmail }, select: { role: true, isActive: true, restaurantId: true } });
+  check(dbUser && dbUser.role === "ADMIN" && dbUser.isActive && dbUser.restaurantId === restId,
+    "public schema has the ADMIN (active, restaurantId set)");
 
   await api("PATCH", `/super-admin/users/${userId}/toggle-status`, undefined, saToken);
   const dbUser2 = await prisma.user.findUnique({ where: { email: uEmail }, select: { isActive: true } });
-  check(dbUser2.isActive === false, "toggle persisted (deactivated) in PostgreSQL");
+  check(dbUser2 && dbUser2.isActive === false, "toggle persisted (deactivated) in public schema");
   const reset = await api("PATCH", `/super-admin/users/${userId}/reset-password`, undefined, saToken);
   check(reset.status === 200 && !!reset.data?.data?.newPassword, `reset password returns a new temporary password (${reset.status})`);
+
+  // Tenant-staff creation via SA lands in the tenant schema (covered in depth by
+  // qa/cross-tenant-verify.js) — quick sanity here, no toggle/reset (Staff Roster).
+  const sEmail = `qa-full-s-${suffix}@test.com`;
+  const sCreate = await api("POST", "/super-admin/users", { restaurantId: restId, name: "QA Full Staff", email: sEmail, password: "StaffPass@123", role: "CASHIER" }, saToken);
+  const sDb = await tenantDb.user.findUnique({ where: { email: sEmail }, select: { id: true, role: true, restaurantId: true } });
+  check(sCreate.status === 201 && !!sDb && sDb.role === "CASHIER" && sDb.restaurantId === restId,
+    "SA-created tenant staff lands in the tenant schema (CASHIER, restaurantId set)");
 
   // ── §4 PLAN: create (pricing/modules) → refresh read → duplicate → toggle → DB → cleanup ──
   section("§4 PLAN create/duplicate/toggle persistence");

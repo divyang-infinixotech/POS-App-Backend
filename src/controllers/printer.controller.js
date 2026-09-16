@@ -83,14 +83,11 @@ const getSettings = async (req, res) => {
 
     }
 
-};
-
-const printBill = async (req, res) => {
+};const printBill = async (req, res) => {
 
     try {
 
         const data =
-
             await getBillPrintData(
                 req.user.restaurantId,
                 req.params.id,
@@ -99,25 +96,18 @@ const printBill = async (req, res) => {
             );
 
         return successResponse(
-
             res,
-
             data,
-
             "Bill Print Data"
 
         );
 
     }
-
     catch (error) {
-
         return errorResponse(
-
             res,
-
-            error.message
-
+            error.message,
+            error.statusCode || 500
         );
 
     }
@@ -136,25 +126,18 @@ const printKOT = async (req, res) => {
         );
 
         return successResponse(
-
             res,
-
             data,
-
             "KOT Print Data"
 
         );
 
     }
-
     catch (error) {
-
         return errorResponse(
-
             res,
-
-            error.message
-
+            error.message,
+            error.statusCode || 500
         );
 
     }
@@ -172,25 +155,18 @@ const printReprint = async (req, res) => {
         );
 
         return successResponse(
-
             res,
-
             data,
-
             "Bill Reprint"
 
         );
 
     }
-
     catch (error) {
-
         return errorResponse(
-
             res,
-
-            error.message
-
+            error.message,
+            error.statusCode || 500
         );
 
     }

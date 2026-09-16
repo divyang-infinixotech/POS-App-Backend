@@ -101,6 +101,14 @@ try {
   console.error("⚠ Warning: Could not load image cleanup cron:", err.message);
 }
 
+// ─── Email cron (queue retries + application expiry) ───
+try {
+  const emailCronJob = require("./cron/email.cron");
+  emailCronJob();
+} catch (err) {
+  console.error("⚠ Warning: Could not load email cron:", err.message);
+}
+
 // ─── Graceful shutdown (SIGTERM / SIGINT) ───
 // Closes the HTTP server (which stops Socket.IO), then disconnects Prisma so
 // the process exits without hanging database connections. A short timeout

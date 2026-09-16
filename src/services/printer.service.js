@@ -7,6 +7,16 @@ const {
     buildKOTTemplate
 } = require("../templates/kot.template");
 
+/** Not-found errors carry a 404 so controllers return the API-wide "not found"
+ * convention (same as bill/payment/print controllers) instead of a 500. A 404
+ * also keeps tenant isolation opaque — a resource in another tenant's schema is
+ * indistinguishable from a missing one. */
+const notFound = (message) => {
+    const err = new Error(message);
+    err.statusCode = 404;
+    return err;
+};
+
 const savePrinterSettings = async (restaurantId, data, tenantDb) => {
     const prisma = tenantDb;
     if (!prisma) throw new Error("tenantDb is required for printer service");
@@ -57,7 +67,7 @@ const getBillPrintData = async (restaurantId, billId, tenantDb) => {
     });
 
     if (!bill) {
-        throw new Error("Bill not found");
+        throw notFound("Bill not found");
     }
 
     return buildBillTemplate(restaurant, bill, bill.order, bill.order.orderItems);
@@ -87,7 +97,7 @@ const getKOTPrintData = async (restaurantId, kotId, tenantDb) => {
     });
 
     if (!kot) {
-        throw new Error("KOT not found");
+        throw notFound("KOT not found");
     }
 
     // KOTItems are the authoritative source for what a KOT contains.
@@ -120,7 +130,7 @@ const reprintBill = async (restaurantId, billId, tenantDb) => {
     });
 
     if (!bill) {
-        throw new Error("Bill not found");
+        throw notFound("Bill not found");
     }
 
     await prisma.bill.update({

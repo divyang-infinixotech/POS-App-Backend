@@ -36,6 +36,11 @@ const settingSchema = Joi.object({
     enableStock: Joi.boolean().default(true),
     enableActiveOrders: Joi.boolean().default(true),
     enableTableReservations: Joi.boolean().default(false),
+    enableStaffRoster: Joi.boolean().default(true),
+    // Part 11: tenant Barcode Scanner toggle. Plan entitlement (barcode_scanner
+    // in Subscription.features) is the upper limit — enforced by requireFeature
+    // on the barcode lookup route regardless of this setting.
+    barcodeScannerEnabled: Joi.boolean().default(false),
     // Billing Behavior Settings
     autoPrintBill: Joi.boolean().default(false),
     autoPrintKOT: Joi.boolean().default(false),

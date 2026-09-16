@@ -2,7 +2,10 @@
  * CROSS-TENANT ISOLATION — E2E verification (auth + tenant resolution + writes)
  *
  * Hits the ACTUAL running backend on :5001 and the actual local database.
- * Tenants under test (all ACTIVE): restaurant_1, restaurant_2, restaurant_9.
+ * Tenants under test: restaurant_1, restaurant_9, plus a third tenant picked
+ * at runtime — it must hold an ACTIVE (non-expired) subscription, otherwise
+ * the backend correctly blocks it with 403 and every API check would fail.
+ * (Hardcoding restaurant_2 went stale when its plan expired 2026-09-05.)
  *
  * Covers:
  *   A. Real tenant-staff password login (restaurant_1 MANAGER, password123)
@@ -11,7 +14,7 @@
  *   H/I/J. Cross-tenant read attempts constrained to own tenant
  *   K. ADMIN staff creation with a hostile body restaurantId → must land in the
  *      caller's OWN tenant with restaurantId = caller's restaurant
- *   L. SUPER_ADMIN staff creation (restaurant_2 / restaurant_9 MANAGERs) must
+ *   L. SUPER_ADMIN staff creation (third-tenant / restaurant_9 MANAGERs) must
  *      set restaurantId on the tenant row, and those staff must log in + stay
  *      inside their own tenant
  *   M. MANAGER cannot create staff (existing permission matrix)
@@ -56,11 +59,61 @@ function decodeJwt(token) {
 
 const TENANTS = [
   { id: 1, schema: "restaurant_1" },
-  { id: 2, schema: "restaurant_2" },
+  null, // third tenant resolved at runtime (pickThirdTenant below)
   { id: 9, schema: "restaurant_9" },
 ];
+
+/**
+ * Pick a third tenant that currently has an ACTIVE subscription (expiry at
+ * least a day out) and a fully-migrated tenant schema. The backend blocks
+ * tenants with expired subscriptions (403 "subscription has expired") — by
+ * design — so the fixture must be a live tenant, not a hardcoded id.
+ * Schema completeness is checked via information_schema in ONE query set:
+ * the newest migrations added Subcategory, UserFloorAssignment + the User_id_seq.
+ * Returns candidate list ordered by expiry (newest first).
+ */
+async function thirdTenantCandidates() {
+  const withSeq = await platformPrisma.$queryRawUnsafe(
+    `SELECT sequence_schema FROM information_schema.sequences WHERE sequence_name = 'User_id_seq'`
+  );
+  const withSub = await platformPrisma.$queryRawUnsafe(
+    `SELECT table_schema FROM information_schema.tables WHERE table_name = 'Subcategory'`
+  );
+  const withUfa = await platformPrisma.$queryRawUnsafe(
+    `SELECT table_schema FROM information_schema.tables WHERE table_name = 'UserFloorAssignment'`
+  );
+  const norm = (rows, key) => new Set(rows.map((r) => r[key].replace(/"/g, "")));
+  const seqSet = norm(withSeq, "sequence_schema");
+  const subSet = norm(withSub, "table_schema");
+  const ufaSet = norm(withUfa, "table_schema");
+
+  const subs = await platformPrisma.subscription.findMany({
+    where: {
+      status: "ACTIVE",
+      expiryDate: { gt: new Date(Date.now() + 86400000) },
+      restaurantId: { notIn: [1, 9] },
+    },
+    select: { restaurantId: true },
+    orderBy: { expiryDate: "desc" },
+  });
+  return subs
+    .map((s) => ({ id: s.restaurantId, schema: "restaurant_" + s.restaurantId }))
+    .filter((t) => seqSet.has(t.schema) && subSet.has(t.schema) && ufaSet.has(t.schema));
+}
+
+/** A candidate is usable only if menu AND staff APIs both answer 200 (plan
+ *  gating must include the staff feature). Uses the real login-as flow. */
+async function tenantUsableForQa(restaurantId, saToken) {
+  const la = await api("GET", `/super-admin/restaurants/${restaurantId}/login-as`, null, saToken);
+  const tok = la.data?.data?.token;
+  if (!tok) return false;
+  const menu = await api("GET", "/menu", null, tok);
+  if (menu.status !== 200) return false;
+  const users = await api("GET", "/users?limit=1", null, tok);
+  return users.status === 200;
+}
+
 const tenantClients = {};
-for (const t of TENANTS) tenantClients[t.id] = getTenantClient(t.schema);
 
 // QA users created during this run (deleted in finally)
 const createdTenantUsers = []; // { client, id, restaurantId, email }
@@ -75,6 +128,22 @@ const createdTenantUsers = []; // { client, id, restaurantId, email }
   check(sa.status === 200, `SUPER_ADMIN password login → ${sa.status}`, sa.data?.message || sa.data);
   const saToken = sa.data?.token;
   check(saToken && decodeJwt(saToken)?.role === "SUPER_ADMIN" && !decodeJwt(saToken)?.restaurantId, "SUPER_ADMIN JWT: role SUPER_ADMIN, no restaurantId claim");
+
+  // ── Resolve the third tenant (ACTIVE sub + migrated schema + staff feature) ──
+  const candidates = await thirdTenantCandidates();
+  let third = null;
+  for (const c of candidates.slice(0, 10)) {
+    if (await tenantUsableForQa(c.id, saToken)) { third = c; break; }
+  }
+  if (third) {
+    TENANTS[1] = third;
+    console.log(`  third tenant: restaurant_${third.id} (ACTIVE sub + staff feature)`);
+  } else {
+    TENANTS[1] = { id: 2, schema: "restaurant_2" };
+    console.log("  ⚠️  no other usable ACTIVE tenant found — falling back to restaurant_2 (fails if expired)");
+  }
+  for (const t of TENANTS) tenantClients[t.id] = getTenantClient(t.schema);
+  const t2 = TENANTS[1];
 
   const admTokens = {};
   for (const t of TENANTS) {
@@ -123,30 +192,30 @@ const createdTenantUsers = []; // { client, id, restaurantId, email }
   const t1 = await api("GET", "/tables", null, tokM1);
   check(t1.status === 200 && (t1.data?.tables || []).length === ground[1].tables, `Tables scoped to restaurant_1 (${(t1.data?.tables || []).length}/${ground[1].tables})`);
 
-  section("TEST D/E — restaurant_2 tenant staff (temp MANAGER via SUPER_ADMIN)");
+  section(`TEST D/E — restaurant_${t2.id} tenant staff (temp MANAGER via SUPER_ADMIN)`);
   const suffix = Date.now();
   const m2Email = `ctqa.mgr2.${suffix}@ctqa.com`;
-  const m2Create = await api("POST", "/super-admin/users", { restaurantId: 2, name: "CT QA Manager R2", email: m2Email, password: "CrossTenant@123", role: "MANAGER" }, saToken);
-  check(m2Create.status === 201, `SUPER_ADMIN created MANAGER in restaurant_2 → ${m2Create.status}`, m2Create.data?.message || m2Create.data);
+  const m2Create = await api("POST", "/super-admin/users", { restaurantId: t2.id, name: "CT QA Manager R2", email: m2Email, password: "CrossTenant@123", role: "MANAGER" }, saToken);
+  check(m2Create.status === 201, `SUPER_ADMIN created MANAGER in restaurant_${t2.id} → ${m2Create.status}`, m2Create.data?.message || m2Create.data);
   const m2Row = m2Create.data?.data?.id ? m2Create.data.data : null;
-  if (m2Row) createdTenantUsers.push({ client: tenantClients[2], id: m2Row.id, restaurantId: 2, email: m2Email });
-  const m2Db = m2Row ? await tenantClients[2].user.findUnique({ where: { id: m2Row.id }, select: { id: true, restaurantId: true, role: true } }) : null;
-  check(m2Db && m2Db.restaurantId === 2 && m2Db.role === "MANAGER", "restaurant_2 row has restaurantId=2 (SA create sets restaurantId)");
+  if (m2Row) createdTenantUsers.push({ client: tenantClients[t2.id], id: m2Row.id, restaurantId: t2.id, email: m2Email });
+  const m2Db = m2Row ? await tenantClients[t2.id].user.findUnique({ where: { id: m2Row.id }, select: { id: true, restaurantId: true, role: true } }) : null;
+  check(m2Db && m2Db.restaurantId === t2.id && m2Db.role === "MANAGER", `restaurant_${t2.id} row has restaurantId=${t2.id} (SA create sets restaurantId)`);
   const lm2 = await api("POST", "/auth/login", { email: m2Email, password: "CrossTenant@123" });
-  check(lm2.status === 200, `restaurant_2 MANAGER login → ${lm2.status}`, lm2.data?.message || lm2.data);
+  check(lm2.status === 200, `restaurant_${t2.id} MANAGER login → ${lm2.status}`, lm2.data?.message || lm2.data);
   const tokM2 = lm2.data?.token;
   const cM2 = decodeJwt(tokM2);
-  check(cM2?.role === "MANAGER" && Number(cM2?.restaurantId) === 2, `JWT: role=${cM2?.role} restaurantId=${cM2?.restaurantId} (must be 2)`);
+  check(cM2?.role === "MANAGER" && Number(cM2?.restaurantId) === t2.id, `JWT: role=${cM2?.role} restaurantId=${cM2?.restaurantId} (must be ${t2.id})`);
   const m2menu = await api("GET", "/menu", null, tokM2);
-  check(m2menu.status === 200 && menuIdSet(m2menu.data) === ground[2].itemIds.sort((a, b) => a - b).join(","), "Menu == restaurant_2 DB set");
+  check(m2menu.status === 200 && menuIdSet(m2menu.data) === ground[t2.id].itemIds.sort((a, b) => a - b).join(","), `Menu == restaurant_${t2.id} DB set`);
   const m2x = await api("GET", "/menu?restaurantId=1", null, tokM2);
-  check(m2x.status === 200 && menuIdSet(m2x.data) === menuIdSet(m2menu.data), "GET /menu?restaurantId=1 → STILL restaurant_2 data (override blocked)");
+  check(m2x.status === 200 && menuIdSet(m2x.data) === menuIdSet(m2menu.data), `GET /menu?restaurantId=1 → STILL restaurant_${t2.id} data (override blocked)`);
   // staff list is read AFTER the temp MANAGER was created for this run, so it
   // must contain the pre-existing users PLUS the temp manager (proves the temp
   // row landed in this tenant's own list, and only here)
   const m2u = await api("GET", "/users?limit=100", null, tokM2);
   const m2Emails = (m2u.data?.data?.users || []).map((u) => u.email);
-  check(m2u.status === 200 && m2Emails.length === ground[2].userCount + 1 && m2Emails.includes(m2Email), `Staff list == restaurant_2 users + temp MANAGER (${m2Emails.length}/${ground[2].userCount + 1})`);
+  check(m2u.status === 200 && m2Emails.length === ground[t2.id].userCount + 1 && m2Emails.includes(m2Email), `Staff list == restaurant_${t2.id} users + temp MANAGER (${m2Emails.length}/${ground[t2.id].userCount + 1})`);
   const m2CreateStaff = await api("POST", "/users", { name: "Should Not", email: `ctqa.deny.${suffix}@ctqa.com`, password: "CrossTenant@123", role: "WAITER" }, tokM2);
   check(m2CreateStaff.status === 403, `MANAGER cannot create staff → ${m2CreateStaff.status} (existing permission matrix)`);
 
@@ -188,8 +257,8 @@ const createdTenantUsers = []; // { client, id, restaurantId, email }
   // explicitly ensure no OTHER tenant's staff leaks into this tenant's list
   const r1Waiters = await api("GET", "/users/waiters", null, admTokens[1]);
   const r1WaiterIds = (r1Waiters.data?.data?.users || []).map((u) => u.id);
-  const others = [...ground[2].users, ...ground[9].users].map((u) => u.id);
-  check(!r1WaiterIds.some((id) => others.includes(id)), "restaurant_1 waiter list contains no restaurant_2/9 staff");
+  const others = [...ground[t2.id].users, ...ground[9].users].map((u) => u.id);
+  check(!r1WaiterIds.some((id) => others.includes(id)), `restaurant_1 waiter list contains no restaurant_${t2.id}/9 staff`);
 
   section("TEST K — ADMIN staff creation with hostile body restaurantId stays in own tenant");
   const adminTok1 = admTokens[1];
@@ -243,10 +312,10 @@ const createdTenantUsers = []; // { client, id, restaurantId, email }
   }
   // brief landmark: user 931 exists only in restaurant_1
   const u931_1 = await tenantClients[1].user.findUnique({ where: { id: 931 }, select: { id: true, name: true, role: true, restaurantId: true } });
-  const u931_2 = await tenantClients[2].user.findUnique({ where: { id: 931 } }).catch(() => null);
+  const u931_2 = await tenantClients[t2.id].user.findUnique({ where: { id: 931 } }).catch(() => null);
   const u931_9 = await tenantClients[9].user.findUnique({ where: { id: 931 } }).catch(() => null);
   check(!!u931_1 && u931_1.restaurantId === 1 && u931_1.role === "MANAGER", `User 931 exists ONLY in restaurant_1 as MANAGER(r1) (${u931_1 ? u931_1.name : "NOT FOUND"})`);
-  check(!u931_2 && !u931_9, "User 931 absent from restaurant_2 / restaurant_9");
+  check(!u931_2 && !u931_9, `User 931 absent from restaurant_${t2.id} / restaurant_9`);
 
   console.log(`\n──────── RESULTS: ${pass} passed, ${fail} failed ────────`);
   if (failures.length) { console.log("\nFAILURES:"); failures.forEach((f) => console.log("  - " + f)); }

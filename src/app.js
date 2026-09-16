@@ -41,6 +41,7 @@ const floorRoutes = require("./routes/floor.routes");
 const subscriptionRoutes = require("./routes/subscription.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const superAdminRoutes = require("./routes/super-admin.routes");
+const onboardingRoutes = require("./routes/onboarding.routes");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -88,7 +89,7 @@ app.use(apiLimiter);
 app.use("/api/subscriptions/webhook", express.raw({ type: "application/json" }));
 app.use(express.json());
 
-// ─── Serve uploaded files (logos, etc.) ───
+// ─── Serve uploaded files (logos, menu images) ───
 const uploadsDir = path.join(__dirname, "..", "uploads");
 try {
   if (!fs.existsSync(uploadsDir)) {
@@ -97,7 +98,14 @@ try {
 } catch (err) {
   console.warn("Could not create uploads directory:", err.message);
 }
-app.use("/uploads", express.static(uploadsDir));
+// SECURITY: only PUBLIC asset folders are served statically. Business documents
+// (uploads/documents) are sensitive and are NEVER exposed through public URLs —
+// they are only reachable through the authorized download endpoints
+// (GET /api/onboarding/documents/:id/download for the applicant and
+// GET /api/super-admin/restaurants/:id/documents/:documentId/download for the
+// SUPER_ADMIN). Any other /uploads/* path returns 404.
+app.use("/uploads/logos", express.static(path.join(uploadsDir, "logos")));
+app.use("/uploads/menu", express.static(path.join(uploadsDir, "menu")));
 
 // ─── Request logger (development only) ───
 // Never logs query strings — PDF/KOT download links pass ?token= and logging
@@ -158,6 +166,9 @@ app.use("/api/notifications", notificationRoutes);
 
 // ─── Super Admin Routes ───
 app.use("/api/super-admin", superAdminRoutes);
+
+// ─── Self-serve onboarding (public registration flow) ───
+app.use("/api/onboarding", onboardingRoutes);
 
 // ─── Root health-check ───
 app.get("/", (req, res) => {

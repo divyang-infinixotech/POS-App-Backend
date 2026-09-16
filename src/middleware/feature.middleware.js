@@ -61,4 +61,43 @@ const requireFeature = (feature) => {
   };
 };
 
+/**
+ * Restaurant-level module toggle (tenant RestaurantSetting).
+ *
+ * Hierarchy: plan entitlement (requireFeature) → restaurant toggle → staff
+ * permission. The toggle can only turn a plan-granted capability OFF; it can
+ * never grant anything the plan does not include. SUPER_ADMIN bypasses (the
+ * platform toggle screen is separate). Existing requireFeature chains are
+ * untouched — use this alongside them on staff-roster management routes.
+ *
+ * Reads the value from req.tenantDb (tenant RestaurantSetting, DB authoritative);
+ * if the row/column is missing the toggle defaults to ON so existing behavior
+ * is never unexpectedly blocked.
+ */
+const requireModuleEnabled = (settingKey, label) => {
+  return async (req, res, next) => {
+    try {
+      if (req.user && req.user.role === "SUPER_ADMIN") return next();
+      if (!req.tenantDb) return next(); // no tenant context — leave gating to requireFeature
+      const setting = await req.tenantDb.restaurantSetting.findFirst({
+        where: { restaurantId: req.user.restaurantId },
+        select: { [settingKey]: true },
+      });
+      // Missing row or legacy column → default ON (never surprise-block existing tenants)
+      if (!setting || setting[settingKey] !== false) return next();
+      return res.status(403).json({
+        success: false,
+        message: (label || settingKey) + " has been disabled in POS Settings. Contact your restaurant administrator.",
+      });
+    } catch (error) {
+      // Column not migrated yet / transient DB error → fail open like a missing setting
+      console.error("[requireModuleEnabled] error:", error.message);
+      return next();
+    }
+  };
+};
+
+// requireFeature stays the default export — dozens of route files destructure
+// the module directly. requireModuleEnabled is attached as a named property.
 module.exports = requireFeature;
+module.exports.requireModuleEnabled = requireModuleEnabled;

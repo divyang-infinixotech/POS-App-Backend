@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node src/__tests__/run.js",
+    "test": "node src/__tests__/run.js && node src/__tests__/onboarding.test.js && node src/__tests__/email.test.js && node src/__tests__/email.templates.test.js && node src/__tests__/business-mode.test.js",
+    "email:preview": "node scripts/email-preview.js",
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "build": "prisma generate",
@@ -33,6 +34,7 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.2.0",
     "node-cron": "^4.6.0",
+    "nodemailer": "^10.0.10",
     "pdfkit": "^0.19.1",
     "prisma": "^6.19.3",
     "razorpay": "^2.9.8",
