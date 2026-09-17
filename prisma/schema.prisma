@@ -274,6 +274,10 @@ enum BusinessType {
   BAKERY
   HOTEL
   FOOD_COURT
+  /// Retail verticals (additive — legacy records unaffected)
+  SUPERMARKET
+  GROCERY
+  CLOTHING
 }
 
 /// High-level POS experience determined by the subscription plan.

@@ -18,6 +18,7 @@ const { platformPrisma: prisma } = require("../config/tenantPrisma");
 const { processEmailQueue, sendApplicationExpiredEmail, sendApplicationExpiringEmail } = require("../services/email.service");
 const { createAuditLog } = require("../services/audit.service");
 const { createNotification } = require("../services/notification.service");
+const { getLoginUrl } = require("../utils/frontendUrl");
 
 const EMAIL_RETRY_SCHEDULE = "*/5 * * * *"; // every 5 minutes
 const EXPIRY_SCAN_SCHEDULE = "*/30 * * * *"; // every 30 minutes
@@ -26,7 +27,7 @@ const REMINDER_WINDOW_DAYS = 7; // remind once when expiry is within 7 days
 
 /** Server-configured applicant URL — login resumes the wizard server-side. */
 function applicantUrl() {
-  return `${String(process.env.APP_FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "")}/login`;
+  return getLoginUrl();
 }
 
 async function runEmailQueuePass() {
@@ -54,12 +55,16 @@ async function runApplicationExpiryPass() {
         onboardingStatus: { in: MANUAL_IN_FLIGHT },
         deletedAt: null,
       },
-      select: { id: true, name: true, email: true, onboardingStatus: true },
+      select: { id: true, name: true, email: true, ownerName: true, onboardingStatus: true },
       take: 50,
     });
     // The reference number is DERIVED (never stored): APP-0001 style.
     const refFor = (app) => `APP-${String(app.id).padStart(4, "0")}`;
     for (const app of candidates) {
+      // The greeting carries the PERSON (owner) when known — the restaurant
+      // name belongs in the restaurant field of the template. The applicant
+      // record's own name is the honest fallback (never a fabricated one).
+      const applicantName = app.ownerName || app.name;
       try {
         const expiredAt = new Date();
         await prisma.restaurant.update({
@@ -96,7 +101,7 @@ async function runApplicationExpiryPass() {
         if (app.email) {
           await sendApplicationExpiredEmail({
             to: app.email,
-            applicantName: app.name,
+            applicantName,
             restaurantName: app.name,
             applicationRef: refFor(app),
             expiredAt,
@@ -132,7 +137,7 @@ async function runApplicationReminderPass() {
         onboardingStatus: { in: MANUAL_IN_FLIGHT },
         deletedAt: null,
       },
-      select: { id: true, name: true, email: true },
+      select: { id: true, name: true, email: true, ownerName: true },
       take: 50,
     });
     for (const app of candidates) {
@@ -145,7 +150,7 @@ async function runApplicationReminderPass() {
         if (alreadyReminded) continue;
         await sendApplicationExpiringEmail({
           to: app.email,
-          applicantName: app.name,
+          applicantName: app.ownerName || app.name,
           restaurantName: app.name,
           applicationRef: `APP-${String(app.id).padStart(4, "0")}`,
           expiresAt: new Date(app.applicationExpiresAt).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" }),

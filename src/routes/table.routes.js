@@ -10,6 +10,7 @@ require("../middleware/auth.middleware");
 const authorize =
 require("../middleware/role.middleware");
 const requireFeature = require("../middleware/feature.middleware");
+const { requireBusinessCapability } = require("../middleware/feature.middleware");
 
 const {
   createTableSchema,
@@ -28,6 +29,7 @@ router.post(
     "/",
     protect,
     authorize("ADMIN", "MANAGER"),
+    requireBusinessCapability("tables", "Table management"),
     requireFeature("tables"),
     validate(createTableSchema),
     audit(
@@ -51,6 +53,7 @@ router.put(
     "/:id/status",
     protect,
     authorize("ADMIN", "MANAGER", "WAITER"),
+    requireBusinessCapability("tables", "Table management"),
     requireFeature("tables"),
     audit(
         "TABLE",
@@ -65,6 +68,7 @@ router.put(
     "/:id",
     protect,
     authorize("ADMIN", "MANAGER"),
+    requireBusinessCapability("tables", "Table management"),
     requireFeature("tables"),
     validate(updateTableSchema),
     audit(
@@ -80,6 +84,7 @@ router.delete(
     "/:id",
     protect,
     authorize("ADMIN", "MANAGER"),
+    requireBusinessCapability("tables", "Table management"),
     requireFeature("tables"),
     audit(
         "TABLE",

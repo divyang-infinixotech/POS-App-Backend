@@ -41,6 +41,7 @@ const {
   verifyPaymentSignature,
 } = require("./razorpay.service");
 const { normalizeEmail } = require("../utils/email");
+const { getFrontendUrl, getLoginUrl } = require("../utils/frontendUrl");
 const { resolveBusinessMode, normalizeBusinessType, assertPlanCompatibleWithBusinessType } = require("../utils/businessMode");
 const {
   BUSINESS_TYPES,
@@ -1441,7 +1442,7 @@ async function submitApplication(userId, meta) {
   // Delivery problems are recorded in the EmailLog and retried by the email
   // cron — a failed email can never fail the submission itself.
   try {
-    const frontendUrl = process.env.APP_FRONTEND_URL || "http://localhost:3000";
+    const frontendUrl = getFrontendUrl();
     const submittedAt = new Date().toUTCString();
     const applicationRef = `APP-${String(restaurant.id).padStart(4, "0")}`;
 
@@ -1600,7 +1601,7 @@ async function startManualApplication(userId, data) {
   // ── Post-submission emails (queued, non-fatal) — same matrix as the wizard
   // submission path: applicant confirmation + Super Admin alert. ──
   try {
-    const frontendUrl = process.env.APP_FRONTEND_URL || "http://localhost:3000";
+    const frontendUrl = getFrontendUrl();
     const submittedAt = new Date().toUTCString();
     const applicationRef = `APP-${String(restaurant.id).padStart(4, "0")}`;
     const recipientEmail = restaurant.email || user.email;
@@ -1819,7 +1820,7 @@ async function approveManualApplication(restaurantId, saUserId, meta) {
         applicationRef: `APP-${String(restaurant.id).padStart(4, "0")}`,
         approvedAt: new Date().toUTCString(),
         planName: (restaurant.subscription && restaurant.subscription.plan) || "Selected plan",
-        loginUrl: `${String(process.env.APP_FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "")}/login`,
+        loginUrl: getLoginUrl(),
       });
     }
   } catch (emailErr) {
@@ -2277,7 +2278,7 @@ async function approveApplication(restaurantId, saUserId, meta) {
         applicationRef: `APP-${String(restaurant.id).padStart(4, "0")}`,
         approvedAt: new Date().toUTCString(),
         planName: (plan && plan.name) || restaurant.subscription.plan,
-        loginUrl: `${String(process.env.APP_FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "")}/login`,
+        loginUrl: getLoginUrl(),
       });
     }
   } catch (emailErr) {

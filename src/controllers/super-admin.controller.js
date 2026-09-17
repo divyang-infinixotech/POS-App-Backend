@@ -71,7 +71,11 @@ const updateEmailSettings = async (req, res) => {
 const verifyEmailSettings = async (req, res) => {
   try {
     const result = await verifySmtp();
-    return successResponse(res, result, result.ok ? "SMTP connection verified" : "SMTP verification failed");
+    // Message reflects the ACTIVE transport (Graph when enabled) — the
+    // frontend stays transport-agnostic.
+    const { activeTransportName } = require("../services/email/transport");
+    const label = activeTransportName() === "microsoft-graph" ? "Email transport" : "SMTP";
+    return successResponse(res, result, result.ok ? label + " connection verified" : label + " verification failed");
   } catch (error) {
     return errorResponse(res, error.message);
   }
@@ -92,7 +96,12 @@ const sendTestEmailHandler = async (req, res) => {
         userAgent: req.headers["user-agent"],
       }, prisma);
     } catch (_) { /* non-critical */ }
-    return successResponse(res, result, "Test email sent successfully");
+    // Phase 5: 202 means the transport ACCEPTED the message — say "accepted",
+    // never "delivered".
+    const acceptedMsg = result.provider === "microsoft-graph"
+      ? "Test email accepted by Microsoft Graph."
+      : "Test email accepted by the mail transport.";
+    return successResponse(res, result, acceptedMsg);
   } catch (error) {
     return errorResponse(res, error.message);
   }

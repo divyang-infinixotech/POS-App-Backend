@@ -4,6 +4,7 @@ const audit = require("../middleware/audit.middleware");
 const protect = require("../middleware/auth.middleware");
 const authorize = require("../middleware/role.middleware");
 const requireFeature = require("../middleware/feature.middleware");
+const { requireBusinessCapability } = require("../middleware/feature.middleware");
 
 const {
   getFloors,
@@ -24,6 +25,7 @@ router.post(
   "/",
   protect,
   authorize("ADMIN", "MANAGER"),
+  requireBusinessCapability("floors", "Floor management"),
   requireFeature("floors"),
   audit("FLOOR", "CREATE", (req) => `Created floor "${req.body.name}"`),
   createFloor
@@ -34,6 +36,7 @@ router.put(
   "/:id",
   protect,
   authorize("ADMIN", "MANAGER"),
+  requireBusinessCapability("floors", "Floor management"),
   requireFeature("floors"),
   audit("FLOOR", "UPDATE", (req) => `Updated floor ID ${req.params.id}`),
   updateFloor
@@ -44,6 +47,7 @@ router.delete(
   "/:id",
   protect,
   authorize("ADMIN", "MANAGER"),
+  requireBusinessCapability("floors", "Floor management"),
   requireFeature("floors"),
   audit("FLOOR", "DELETE", (req) => `Deleted floor ID ${req.params.id}`),
   deleteFloor

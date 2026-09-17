@@ -11,6 +11,7 @@ const {
   getMySubscription,
   refreshSubscription,
   listPlans,
+  getPlansMeta,
   createCheckout,
   verifyPayment,
   webhook,
@@ -36,7 +37,11 @@ router.get("/me", protect, getMySubscription);
 router.get("/refresh", protect, refreshSubscription);
 
 // Active purchasable plans (read-only — pricing/modules come from the DB)
+// FILTERED SERVER-SIDE to the restaurant's business-type mode.
 router.get("/plans", protect, listPlans);
+
+// Eligibility metadata (resolved businessType/businessMode) for the plan UI
+router.get("/plans/meta", protect, getPlansMeta);
 
 // Restaurant-safe gateway readiness — drives the “payments unavailable” banner
 router.get("/gateway-status", protect, getGatewayStatus);

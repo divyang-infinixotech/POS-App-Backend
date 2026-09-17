@@ -8,8 +8,10 @@ const { createAuditLog } = require("./audit.service");
 const getPagination = require("../utils/pagination");
 const { normalizeEmail, emailRequiredError, isValidEmail } = require("../utils/email");
 const { resolveBusinessMode, normalizeBusinessType, assertPlanCompatibleWithBusinessType, PLAN_MODES } = require("../utils/businessMode");
+const { getBusinessCapabilities } = require("../utils/businessCapabilities");
 const { filterModulesForBusinessMode } = require("../config/subscription.config");
 const { sendUserCredentialsEmail } = require("./email.service");
+const { getLoginUrl } = require("../utils/frontendUrl");
 
 function buildRestaurantWhere(opts) {
   var where = { deletedAt: null };
@@ -378,11 +380,15 @@ var createRestaurant = async function(data, userId, ipAddress, userAgent) {
   console.log("[Onboarding] Tenant schema ready:", tenantResult.schemaName);
 
   // ── Phase 3: Complete remaining setup in a transaction ──
-  return prisma.$transaction(async function(tx) {
+  // (awaited — the credentials email below must run AFTER this commits, and
+  // the creation result is returned to the controller through this var)
+  var created = await prisma.$transaction(async function(tx) {
     // Create restaurant setting in tenant schema
     // Create restaurant setting in tenant schema — dietaryMode comes from the
-    // Super Admin Food/Dietary Configuration (default VEG_AND_NON_VEG).
-    await tenantDb.restaurantSetting.create({ data: { restaurantId: restaurant.id, restaurantName: name, currency: currency, timezone: timezone, language: language, taxPercentage: 0, serviceCharge: 0, roundOffEnabled: true, billPrefix: "BILL", invoicePrefix: "INV", kotPrefix: "KOT", receiptFooter: "Thank You! Visit Again.", dietaryMode: data.dietaryMode || "VEG_AND_NON_VEG" } });
+    // Super Admin Food/Dietary Configuration (default VEG_AND_NON_VEG), but is
+    // capability-gated: non-food verticals never get food toggles forced on.
+    // The DB columns keep their defaults; the UI simply never exposes them.
+    await tenantDb.restaurantSetting.create({ data: { restaurantId: restaurant.id, restaurantName: name, currency: currency, timezone: timezone, language: language, taxPercentage: 0, serviceCharge: 0, roundOffEnabled: true, billPrefix: "BILL", invoicePrefix: "INV", kotPrefix: "KOT", receiptFooter: "Thank You! Visit Again.", dietaryMode: getBusinessCapabilities(businessType).dietary ? (data.dietaryMode || "VEG_AND_NON_VEG") : "VEG_AND_NON_VEG", enableKitchen: getBusinessCapabilities(businessType).kitchen, autoPrintKOT: getBusinessCapabilities(businessType).kot, autoGenerateKOT: getBusinessCapabilities(businessType).kot } });
     var sub = await tx.subscription.create({ data: { restaurantId: restaurant.id, planId: plan.id, plan: plan.code, status: plan.code === "TRIAL" ? "TRIAL" : "ACTIVE", businessMode: snapshot.businessMode, startDate: dates.startDate, expiryDate: dates.expiryDate, nextRenewalDate: dates.expiryDate, billingCycle: billingCycle, autoRenew: snapshot.autoRenew, maxUsers: data.maxUsers != null ? Number(data.maxUsers) : snapshot.maxUsers, maxTables: data.maxTables != null ? Number(data.maxTables) : snapshot.maxTables, maxMenuItems: data.maxMenuItems != null ? Number(data.maxMenuItems) : snapshot.maxMenuItems, maxFloors: snapshot.maxFloors, maxPrinters: snapshot.maxPrinters, maxBranches: snapshot.maxBranches, maxOrdersPerMonth: snapshot.maxOrdersPerMonth, storageLimitMB: snapshot.storageLimitMB, features: snapshot.features, amount: snapshot.amount } });
     await applyPlanFeaturesToSettings(tx, restaurant.id, snapshot.features, snapshot.businessMode);
     var admin = await tx.user.create({ data: { restaurantId: restaurant.id, name: adminName, email: adminEmail, password: hashedPassword, role: "ADMIN", isActive: true, mustChangePassword: true, passwordChangedAt: new Date() } });
@@ -403,8 +409,30 @@ var createRestaurant = async function(data, userId, ipAddress, userAgent) {
     } catch (platformErr) {
       console.error("[Onboarding] Platform notification/audit failed (non-critical):", platformErr.message);
     }
-    return { id: restaurant.id, name: restaurant.name, plan: plan.code, admin: { id: admin.id, name: admin.name, email: admin.email }, temporaryPassword: temporaryPassword };
+    // The plaintext temporary password NEVER leaves this function via the
+    // return value: the API response previously carried it, which exposed
+    // credentials in the browser/network log. The SA UI already shows the
+    // generated password inline from its own form when one was entered; the
+    // durable delivery path for the admin is the credentials EMAIL below.
+    return { id: restaurant.id, name: restaurant.name, plan: plan.code, admin: { id: admin.id, name: admin.name, email: admin.email }, credentialsQueued: !!adminEmail };
   });
+
+  // ── Credentials email — queued AFTER the creation transaction commits ──
+  // (email failure must never roll back restaurant creation; the EmailLog row
+  // stays queued and the email cron retries it). The SAME temporaryPassword
+  // captured before hashing is passed here — never re-read from the DB.
+  try {
+    await queueAdminCredentialsEmail({
+      adminEmail: adminEmail,
+      adminName: adminName,
+      restaurantName: name,
+      temporaryPassword: temporaryPassword,
+    });
+  } catch (emailErr) {
+    console.error("[SA] Credentials email could not be queued (will be retried):", emailErr.message);
+  }
+
+  return created;
 };
 
 /**
@@ -438,7 +466,7 @@ function generateTemporaryPassword() {
  */
 async function queueAdminCredentialsEmail(data) {
   try {
-    const frontendUrl = String(process.env.APP_FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "");
+    const frontendUrl = getLoginUrl();
     await sendUserCredentialsEmail({
       to: data.adminEmail,
       adminName: data.adminName,

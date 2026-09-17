@@ -1,6 +1,18 @@
 const Joi = require("joi");
 const { POLICY_TYPES } = require("../config/onboarding.config");
+const { BUSINESS_TYPES } = require("../utils/businessMode");
 const { EMAIL_RE } = require("../utils/email");
+
+/**
+ * Business type rule — derived from the SINGLE source of truth
+ * (utils/businessMode.BUSINESS_TYPES) so a new vertical only needs one edit.
+ * HOTEL is legacy-only: existing records stay readable, new onboarding rejects
+ * it (spec §14).
+ */
+const businessTypeRule = () =>
+  Joi.string()
+    .valid(...BUSINESS_TYPES)
+    .invalid("HOTEL");
 
 // Strict email format — far stronger than "contains @". Joi's default email()
 // is permissive in places (e.g. bare domains); this custom rule enforces the
@@ -42,11 +54,7 @@ const registerSchema = Joi.object({
  * requires are mandatory.
  */
 const businessSchema = Joi.object({
-  businessType: Joi.string()
-    // HOTEL is legacy-only: existing records stay readable, new onboarding rejects it (spec §14).
-    .valid("RESTAURANT", "BAKERY", "CAFE", "BAR", "FOOD_TRUCK", "CLOUD_KITCHEN", "FOOD_COURT", "OTHER")
-    .invalid("HOTEL")
-    .required(),
+  businessType: businessTypeRule().required(),
   name: Joi.string().min(2).max(150).required(), // trading/business name
   legalName: Joi.string().allow(null, "").max(200).optional(),
   registrationNumber: Joi.string().allow(null, "").max(100).optional(),
@@ -120,10 +128,7 @@ const verifyPaymentSchema = Joi.object({
 /** Manual payment application start schema */
 const manualStartSchema = Joi.object({
   name: Joi.string().min(2).max(150).required(),
-  businessType: Joi.string()
-    .valid("RESTAURANT", "BAKERY", "CAFE", "BAR", "FOOD_TRUCK", "CLOUD_KITCHEN", "FOOD_COURT", "OTHER")
-    .invalid("HOTEL")
-    .required(),
+  businessType: businessTypeRule().required(),
   legalName: Joi.string().allow(null, "").max(200).optional(),
   registrationNumber: Joi.string().allow(null, "").max(100).optional(),
   ownerName: Joi.string().min(2).max(100).allow(null, "").optional(),

@@ -7,6 +7,7 @@ const protect = require("../middleware/auth.middleware");
 const authorize = require("../middleware/role.middleware");
 const validate = require("../middleware/validate.middleware");
 const requireFeature = require("../middleware/feature.middleware");
+const { requireBusinessCapability } = require("../middleware/feature.middleware");
 
 const {
     createOrderSchema,
@@ -143,6 +144,7 @@ router.patch(
     "/:id/change-table",
     protect,
     authorize("ADMIN", "MANAGER", "WAITER"),
+    requireBusinessCapability("tables", "Table management"),
     requireFeature(["tables", "pos"]),
     validate(changeTableSchema),
     audit("ORDER", "UPDATE", (req) => `Moved Order ${req.params.id} to Table ${req.body.tableId}`),

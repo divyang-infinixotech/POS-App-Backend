@@ -20,6 +20,8 @@
  * Business types OFFERED to new applicants (order = UI order).
  * HOTEL is excluded from new selection (spec §14) — but kept in the mode map
  * and normalization only where legacy data must stay readable.
+ * Retail verticals (SUPERMARKET/GROCERY/CLOTHING) were added additively —
+ * existing stored values keep working unchanged.
  */
 const BUSINESS_TYPES = [
   "RESTAURANT",
@@ -31,6 +33,10 @@ const BUSINESS_TYPES = [
   // Additional supported verticals (existing schema values kept working).
   "BAKERY",
   "FOOD_COURT",
+  // Retail verticals (new — additive, never replacing existing values).
+  "SUPERMARKET",
+  "GROCERY",
+  "CLOTHING",
 ];
 
 /** Legacy values: valid in the DB for existing records, never offered to new applicants. */
@@ -39,6 +45,10 @@ const LEGACY_BUSINESS_TYPES = ["HOTEL"];
 /**
  * Mapping: RESTAURANT → Restaurant-mode plans; every other vertical →
  * Basic-mode plans (BASIC_POS — the enum value used by Plan.businessMode).
+ * The food/retail split is INTENTIONAL and verified by the capability audit:
+ * food service verticals beyond RESTAURANT resolve to BASIC_POS because the
+ * Basic POS plan carries menu/counter-sale features. Adding a type here
+ * without a mode entry falls through to BASIC_POS (most restrictive).
  */
 const BUSINESS_TYPE_TO_MODE = {
   RESTAURANT: "RESTAURANT",
@@ -50,6 +60,10 @@ const BUSINESS_TYPE_TO_MODE = {
   BAKERY: "BASIC_POS",
   HOTEL: "BASIC_POS", // legacy records keep resolving; new selection is blocked
   FOOD_COURT: "BASIC_POS",
+  // Retail verticals → Basic POS (counter-sale/billing mode, no tables/KOT).
+  SUPERMARKET: "BASIC_POS",
+  GROCERY: "BASIC_POS",
+  CLOTHING: "BASIC_POS",
 };
 
 /** Plan modes a plan may carry (mirrors the Prisma BusinessMode enum). */

@@ -13,6 +13,7 @@ const crypto = require("crypto");
 const Razorpay = require("razorpay");
 const prisma = require("../config/prisma");
 const { computeExpiryDate, planToSnapshot } = require("../utils/subscription");
+const { assertPlanCompatibleWithBusinessType } = require("../utils/businessMode");
 const gatewayConfig = require("./gateway-config.service");
 
 // The Razorpay SDK client is cached but re-created when the key pair changes
@@ -162,6 +163,19 @@ async function activateSubscriptionPayment(params) {
       const err = new Error("No subscription found for this restaurant");
       err.statusCode = 404;
       throw err;
+    }
+
+    // ── Business-type compatibility gate (activation-time, server-side) ──
+    // The LAST line of defense: even if a checkout row was created before a
+    // compatibility rule existed (or through a path that skipped the check),
+    // a payment can NEVER activate a plan whose businessMode contradicts the
+    // restaurant's stored businessType. Resolved from the DB — never the client.
+    const activationRestaurant = await tx.restaurant.findUnique({
+      where: { id: Number(restaurantId) },
+      select: { businessType: true },
+    });
+    if (activationRestaurant) {
+      assertPlanCompatibleWithBusinessType(activationRestaurant.businessType, plan);
     }
 
     // Mark the payment paid FIRST (source of truth for the purchase). The

@@ -11,21 +11,27 @@
 const path = require("path");
 
 // ─── Business types offered to new applicants ────────────────────────────────
-// { value: BusinessType enum value, label }
+// { value: BusinessType enum value, label, group }
 // Offered verticals. HOTEL is deliberately NOT offered for new selection
 // (spec §14) — the BusinessType enum value stays valid so existing HOTEL
 // records remain readable; only new onboarding rejects it.
 // RESTAURANT → Restaurant-mode plans; the rest → Basic-mode plans via
-// utils/businessMode.resolveBusinessMode.
+// utils/businessMode.resolveBusinessMode (single source of truth — this list
+// only carries display metadata).
 const BUSINESS_TYPES = [
-  { value: "RESTAURANT", label: "Restaurant" },
-  { value: "CAFE", label: "Café" },
-  { value: "BAR", label: "Bar" },
-  { value: "FOOD_TRUCK", label: "Food Truck" },
-  { value: "CLOUD_KITCHEN", label: "Cloud Kitchen" },
-  { value: "OTHER", label: "Other" },
-  { value: "BAKERY", label: "Bakery" },
-  { value: "FOOD_COURT", label: "Food Court" },
+  // Food service (group 1)
+  { value: "RESTAURANT", label: "Restaurant", group: "Food Service" },
+  { value: "CAFE", label: "Café", group: "Food Service" },
+  { value: "BAKERY", label: "Bakery", group: "Food Service" },
+  { value: "BAR", label: "Bar / Pub", group: "Food Service" },
+  { value: "FOOD_TRUCK", label: "Food Truck / Quick Service", group: "Food Service" },
+  { value: "CLOUD_KITCHEN", label: "Cloud Kitchen", group: "Food Service" },
+  { value: "FOOD_COURT", label: "Food Court", group: "Food Service" },
+  // Retail (group 2)
+  { value: "SUPERMARKET", label: "Supermarket / Grocery", group: "Retail" },
+  { value: "GROCERY", label: "Grocery Store", group: "Retail" },
+  { value: "CLOTHING", label: "Retail / Clothing", group: "Retail" },
+  { value: "OTHER", label: "Other", group: "Retail" },
 ];
 
 // Kept for backward compatibility with existing imports: all former legacy

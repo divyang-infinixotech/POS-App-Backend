@@ -5,6 +5,47 @@
  */
 const prisma = require("../config/prisma");
 const { PLAN_FEATURES, DEFAULT_FEATURES } = require("../config/subscription.config");
+const { getBusinessCapabilities } = require("../utils/businessCapabilities");
+
+/**
+ * requireBusinessCapability(flag, label) — business-TYPE gate (distinct from
+ * requireFeature's plan gate). Composes with it:
+ *
+ *   featureVisible = businessCapability && planCapability && userPermission
+ *
+ * Resolves the tenant's businessType from the platform Restaurant row
+ * (never client-supplied) and rejects the request when the capability flag is
+ * false — a retail tenant cannot create floors/tables/KOTs by calling the API
+ * directly, regardless of what its plan includes. SUPER_ADMIN bypasses.
+ */
+const requireBusinessCapability = (flag, label) => {
+  return async (req, res, next) => {
+    try {
+      if (req.user && req.user.role === "SUPER_ADMIN") return next();
+      const restaurantId = req.user && req.user.restaurantId;
+      if (!restaurantId) {
+        return res.status(403).json({ success: false, message: "Feature not available for this business type." });
+      }
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { id: restaurantId },
+        select: { businessType: true },
+      });
+      const capabilities = getBusinessCapabilities(restaurant ? restaurant.businessType : null);
+      if (capabilities[flag] === false) {
+        return res.status(403).json({
+          success: false,
+          message: (label || flag) + " is not available for this business type.",
+        });
+      }
+      next();
+    } catch (error) {
+      console.error("[requireBusinessCapability] error:", error.message);
+      return res.status(500).json({ success: false, message: "Server Error" });
+    }
+  };
+};
+
+module.exports.requireBusinessCapability = requireBusinessCapability;
 
 /**
  * requireFeature accepts a single key OR an array of keys (any-of).
@@ -98,6 +139,8 @@ const requireModuleEnabled = (settingKey, label) => {
 };
 
 // requireFeature stays the default export — dozens of route files destructure
-// the module directly. requireModuleEnabled is attached as a named property.
+// the module directly. requireModuleEnabled / requireBusinessCapability are
+// attached as named properties.
 module.exports = requireFeature;
 module.exports.requireModuleEnabled = requireModuleEnabled;
+module.exports.requireBusinessCapability = requireBusinessCapability;

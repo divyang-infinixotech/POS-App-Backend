@@ -10,6 +10,28 @@ const { validateImageBuffer, processImage } = require("../services/image.service
 
 const { successResponse, errorResponse } = require("../utils/response");
 const { dietaryMenuWhere, dietaryItemError, restaurantDietaryMode } = require("../utils/dietary");
+const { getBusinessCapabilities } = require("../utils/businessCapabilities");
+const prisma = require("../config/prisma");
+
+/**
+ * §11: business-type capability guard for the catalog. A non-food tenant
+ * cannot inject dietary/kitchen semantics through the API — the fields are
+ * safely neutralized to the DB defaults (never rejected, so retail imports
+ * keep working; never stored as client-supplied food data).
+ */
+const getTenantCapabilities = async (req) => {
+  try {
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: req.user.restaurantId },
+      select: { businessType: true },
+    });
+    return getBusinessCapabilities(restaurant ? restaurant.businessType : null);
+  } catch (err) {
+    // Fail open to food capabilities so an infra hiccup never breaks
+    // existing restaurant tenants.
+    return getBusinessCapabilities("RESTAURANT");
+  }
+};
 
 /**
  * Load the restaurant's dietary mode from the TENANT settings (Part 16).
@@ -163,9 +185,14 @@ const createMenuItem = async (req, res) => {
     // A VEG_ONLY restaurant can never create NON_VEG items — the request is
     // rejected with the same canonical 400 the update path uses (no silent
     // coercion: callers must know the item was not created as submitted).
-    let dietaryTypeValue = dietaryType === "NON_VEG" || dietaryType === "VEG"
-      ? dietaryType
-      : (isVeg === false ? "NON_VEG" : "VEG");
+    // §11: non-food tenants have NO dietary concept — client-supplied values
+    // are ignored and the DB-default (VEG) is stored instead.
+    const capabilities = await getTenantCapabilities(req);
+    let dietaryTypeValue = capabilities.dietary === false
+      ? "VEG"
+      : (dietaryType === "NON_VEG" || dietaryType === "VEG"
+        ? dietaryType
+        : (isVeg === false ? "NON_VEG" : "VEG"));
     if (dietaryTypeValue === "NON_VEG" && (await getRestaurantDietaryMode(req)) === "VEG_ONLY") {
       return errorResponse(res, "This restaurant is configured for Veg Only — items cannot be set to Non-Veg.", 400);
     }
@@ -454,8 +481,12 @@ const updateMenuItem = async (req, res) => {
 
         // Dietary type (Part 8/16): explicit dietaryType wins; keep isVeg in sync.
         // A VEG_ONLY restaurant can never (re)classify an item as NON_VEG.
+        // §11: non-food tenants have no dietary concept — injected values are ignored.
+        const updateCapabilities = await getTenantCapabilities(req);
         const wantsNonVeg = dietaryType === "NON_VEG" || (dietaryType === undefined && isVeg === false);
-        if (dietaryType !== undefined || isVeg !== undefined) {
+        if (updateCapabilities.dietary === false) {
+          // neutralize silently — never store client-supplied food data for retail
+        } else if (dietaryType !== undefined || isVeg !== undefined) {
             if (wantsNonVeg && (await getRestaurantDietaryMode(req)) === "VEG_ONLY") {
                 return errorResponse(res, "This restaurant is configured for Veg Only — items cannot be set to Non-Veg.", 400);
             }

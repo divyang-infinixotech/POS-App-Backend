@@ -18,6 +18,7 @@ const crypto = require("crypto");
 const { platformPrisma: prisma } = require("../config/tenantPrisma");
 const { normalizeEmail, isValidEmail } = require("../utils/email");
 const { sendOtpEmail, sendEmailVerifiedEmail } = require("./email.service");
+const { getLoginUrl } = require("../utils/frontendUrl");
 const logger = require("../logger/logger");
 
 const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -185,7 +186,7 @@ async function verifyOtp(rawEmail, rawOtp) {
   try {
     await sendEmailVerifiedEmail({
       to: email,
-      applicationUrl: `${String(process.env.APP_FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "")}/login`,
+      applicationUrl: getLoginUrl(),
     });
   } catch (mailErr) {
     logger.warn(`[OTP] EMAIL_VERIFIED enqueue skipped: ${mailErr.message}`);

@@ -7,6 +7,7 @@ const protect = require("../middleware/auth.middleware");
 const authorize = require("../middleware/role.middleware");
 const validate = require("../middleware/validate.middleware");
 const requireFeature = require("../middleware/feature.middleware");
+const { requireBusinessCapability } = require("../middleware/feature.middleware");
 
 const {
     createKOTSchema,
@@ -35,6 +36,7 @@ const {
 router.post(
     "/",
     protect,
+    requireBusinessCapability("kot", "Kitchen (KOT)"),
     requireFeature("kitchen"),
     authorize("ADMIN", "MANAGER"),
     validate(createKOTSchema),

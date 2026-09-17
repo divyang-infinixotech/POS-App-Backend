@@ -136,6 +136,19 @@ async function getEmailStatus() {
   if (!cfg.fromEmail) problems.push("From email is not set");
   if (cfg.host && !cfg.user) problems.push("SMTP username is not set");
   if (!cfg.password) problems.push("SMTP password is not set");
+
+  // ── Microsoft Graph status (masked) ──
+  // Non-secret identifiers only; the client secret is NEVER returned —
+  // only a boolean "configured" flag. The frontend renders the badge from
+  // this server-resolved state (transport/flag logic stays backend-only).
+  const graph = require("../services/email/microsoftGraph.client");
+  const g = graph.getGraphConfig();
+  const graphConfigured = graph.isGraphConfigured(g);
+  let graphStatus;
+  if (!g.enabled) graphStatus = "DISABLED";
+  else if (!graphConfigured) graphStatus = "INCOMPLETE";
+  else graphStatus = "ENABLED";
+
   return {
     enabled: cfg.enabled,
     host: cfg.host,
@@ -150,6 +163,15 @@ async function getEmailStatus() {
     passwordConfigured: !!cfg.password,
     status: problems.length === 0 ? "CONFIGURED" : problems.length >= 3 ? "NOT_CONFIGURED" : "PARTIAL",
     problems,
+    // Graph block (Phase 3) — masked, safe for the frontend:
+    provider: graphStatus === "DISABLED" ? "smtp" : "microsoft-graph",
+    graph: {
+      status: graphStatus, // ENABLED | INCOMPLETE | DISABLED
+      tenantIdConfigured: !!g.tenantId,
+      clientIdConfigured: !!g.clientId,
+      clientSecretConfigured: !!g.clientSecret, // NEVER the value
+      senderEmail: g.senderEmail || "",
+    },
   };
 }
 
@@ -172,6 +194,12 @@ async function isEmailReady() {
 
 /** Verify SMTP connectivity by verifying the transport (never sends mail). */
 async function verifySmtp() {
+  // Microsoft Graph mode: verify configuration + token acquisition instead.
+  // (Name kept for API compatibility with existing controllers/frontend.)
+  const graph = require("../services/email/microsoftGraph.client");
+  if (graph.getGraphConfig().enabled) {
+    return graph.verifyGraphConnection();
+  }
   const cfg = await getEmailConfig();
   if (!cfg.host) return { ok: false, error: "SMTP host is not configured" };
   try {
@@ -199,7 +227,12 @@ async function sendTestEmail(toEmail) {
   if (!isValidEmail(to)) return { ok: false, error: "Please enter a valid test recipient email." };
   const cfg = await getEmailConfig();
   if (!cfg.enabled) return { ok: false, error: "Email notifications are disabled." };
-  if (!cfg.host || !cfg.fromEmail) return { ok: false, error: "SMTP host and from email are required. Save the SMTP settings first." };
+  // Graph mode needs no SMTP host — only its own configuration (checked inside
+  // the transport); SMTP mode keeps the host/fromEmail precondition.
+  const graphEnabled = require("../services/email/microsoftGraph.client").getGraphConfig().enabled;
+  if (!graphEnabled && (!cfg.host || !cfg.fromEmail)) {
+    return { ok: false, error: "SMTP host and from email are required. Save the SMTP settings first." };
+  }
   // Rendered through the shared SMTP_TEST template — same visual identity as
   // every other platform email. Never includes the SMTP password.
   const { renderTemplate } = require("../templates/email.templates");
@@ -210,26 +243,17 @@ async function sendTestEmail(toEmail) {
     supportEmail: cfg.replyTo || cfg.fromEmail || "",
   });
   try {
-    const nodemailer = require("nodemailer");
-    const transporter = nodemailer.createTransport({
-      host: cfg.host,
-      port: Number(cfg.port) || 587,
-      secure: !!cfg.secure,
-      auth: cfg.user ? { user: cfg.user, pass: cfg.password } : undefined,
-      connectionTimeout: 10 * 1000,
-      greetingTimeout: 10 * 1000,
-      socketTimeout: 15 * 1000,
-    });
-    const info = await transporter.sendMail({
-      from: cfg.fromName ? `"${cfg.fromName}" <${cfg.fromEmail}>` : cfg.fromEmail,
+    // Deliver through the ACTIVE transport (Graph when enabled, else SMTP).
+    // Lazy require avoids a load-time cycle (transport reads this config).
+    const transport = require("../services/email/transport");
+    const result = await transport.deliverEmail({
       to,
-      replyTo: cfg.replyTo || undefined,
       subject: rendered.subject,
-      text: rendered.text,
-      html: rendered.html,
+      payloadHtml: rendered.html,
+      payloadText: rendered.text,
     });
-    transporter.close();
-    return { ok: true, messageId: info && info.messageId };
+    if (result.ok) return { ok: true, messageId: result.messageId, provider: result.provider };
+    return { ok: false, error: String(result.error || "Test email failed").slice(0, 300) };
   } catch (e) {
     return { ok: false, error: String(e.message || "Test email failed").slice(0, 300) };
   }

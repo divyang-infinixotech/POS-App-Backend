@@ -15,6 +15,7 @@ const { successResponse, errorResponse } = require("../utils/response");
 const prisma = require("../config/prisma");
 const { isGatewayReady, recordWebhookActivity } = require("../services/gateway-config.service");
 const { AVAILABLE_RESTAURANT_MODULES } = require("../config/subscription.config");
+const { resolveBusinessMode, assertPlanCompatibleWithBusinessType } = require("../utils/businessMode");
 
 // ─── Super Admin: assign / renew any restaurant's plan (existing behavior) ───
 const upgradePlan = async (req, res) => {
@@ -83,6 +84,14 @@ const refreshSubscription = async (req, res) => {
  * Active purchasable plans with module permissions AND the backend-computed
  * action (RENEWAL/UPGRADE/SWITCH/DOWNGRADE), price and expected expiry for
  * the requested cycle relative to the calling restaurant's subscription.
+ *
+ * BUSINESS-TYPE ELIGIBILITY (single source of truth): the restaurant's
+ * businessType is resolved SERVER-SIDE from its DB row — never from a query
+ * param — and plans are filtered to the matching business mode via
+ * resolveBusinessMode() (the same resolver onboarding uses). A supermarket
+ * never sees restaurant-mode plans; a restaurant never sees retail-only
+ * lists. The response carries `businessMode` + `businessType` so the UI can
+ * label the list without re-deriving anything.
  */
 const listPlans = async (req, res) => {
   try {
@@ -94,6 +103,13 @@ const listPlans = async (req, res) => {
       ? await prisma.plan.findUnique({ where: { id: subscription.planId } })
       : null;
 
+    // Server-resolved eligibility: businessType comes from the RESTAURANT ROW.
+    const restaurant = restaurantId
+      ? await prisma.restaurant.findUnique({ where: { id: Number(restaurantId) }, select: { businessType: true } })
+      : null;
+    const businessType = restaurant ? restaurant.businessType : null;
+    const businessMode = resolveBusinessMode(businessType);
+
     // Yearly-only billing rule: the restaurant purchase flow offers YEARLY
     // exclusively. A legacy ?cycle=MONTHLY query is tolerated for backward
     // compatibility but is ignored — the response is always yearly pricing and
@@ -101,7 +117,7 @@ const listPlans = async (req, res) => {
     const cycle = "YEARLY";
 
     const plans = await prisma.plan.findMany({
-      where: { isActive: true, code: { not: "TRIAL" } },
+      where: { isActive: true, code: { not: "TRIAL" }, businessMode },
       include: {
         modulePermissions: {
           include: { module: { select: { key: true, name: true } } },
@@ -118,6 +134,7 @@ const listPlans = async (req, res) => {
       code: p.code,
       name: p.name,
       description: p.description,
+      businessMode: p.businessMode,
       monthlyPrice: p.monthlyPrice, // kept for Super Admin / legacy data — never used for purchase
       yearlyPrice: p.yearlyPrice,
       billingCycle: cycle, // "YEARLY" — the only purchasable cycle
@@ -158,6 +175,27 @@ const listPlans = async (req, res) => {
 };
 
 /**
+ * GET /subscriptions/plans/meta — eligibility metadata for the plan screen.
+ * Lets the UI show WHY the list is filtered ("Restaurant Mode plans for your
+ * Supermarket") without re-implementing the mapping client-side.
+ */
+const getPlansMeta = async (req, res) => {
+  try {
+    const restaurant = req.user.restaurantId
+      ? await prisma.restaurant.findUnique({ where: { id: Number(req.user.restaurantId) }, select: { businessType: true } })
+      : null;
+    const businessType = restaurant ? restaurant.businessType : null;
+    return successResponse(
+      res,
+      { businessType, businessMode: resolveBusinessMode(businessType) },
+      "Plan eligibility metadata"
+    );
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+/**
  * POST /subscriptions/checkout
  * Body: { planId, billingCycle: 'MONTHLY'|'YEARLY', action: 'UPGRADE'|'RENEWAL'|'SWITCH' }
  * Creates a Razorpay order + records a CREATED SubscriptionPayment. The plan is
@@ -180,6 +218,22 @@ const createCheckout = async (req, res) => {
     const plan = await prisma.plan.findUnique({ where: { id: Number(planId) } });
     if (!plan || !plan.isActive) return errorResponse(res, "Selected plan is not available", 400);
     if (plan.code === "TRIAL") return errorResponse(res, "The Trial plan cannot be purchased", 400);
+
+    // SERVER-SIDE business-type compatibility (plan security): a manually
+    // submitted incompatible planId is rejected BEFORE any gateway/order work
+    // — the restaurant's businessType is resolved from the DB, never trusted
+    // from the client.
+    const checkoutRestaurant = await prisma.restaurant.findUnique({
+      where: { id: Number(restaurantId) },
+      select: { businessType: true },
+    });
+    if (checkoutRestaurant) {
+      try {
+        assertPlanCompatibleWithBusinessType(checkoutRestaurant.businessType, plan);
+      } catch (e) {
+        return errorResponse(res, e.message, 400);
+      }
+    }
 
     const subscription = await prisma.subscription.findUnique({ where: { restaurantId } });
     if (!subscription) return errorResponse(res, "No subscription found for this restaurant", 404);
@@ -594,6 +648,7 @@ module.exports = {
   getMySubscription,
   refreshSubscription,
   listPlans,
+  getPlansMeta,
   createCheckout,
   verifyPayment,
   webhook,

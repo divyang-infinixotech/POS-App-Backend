@@ -140,9 +140,10 @@ section("3. Config integrity (business types / document types / policy versions)
 
 // HOTEL is no longer offered for NEW onboarding (removed from selectors);
 // the enum value stays in Prisma so historical records remain readable.
-check(config.BUSINESS_TYPES.length === 8, `Business types offered (${config.BUSINESS_TYPES.length})`);
+// Retail verticals SUPERMARKET/GROCERY/CLOTHING were added additively (2026-09).
+check(config.BUSINESS_TYPES.length === 11, `Business types offered (${config.BUSINESS_TYPES.length})`);
 const offered = config.BUSINESS_TYPES.map((b) => b.value);
-for (const want of ["RESTAURANT", "BAKERY", "CAFE", "BAR", "FOOD_TRUCK", "CLOUD_KITCHEN", "FOOD_COURT", "OTHER"]) {
+for (const want of ["RESTAURANT", "BAKERY", "CAFE", "BAR", "FOOD_TRUCK", "CLOUD_KITCHEN", "FOOD_COURT", "OTHER", "SUPERMARKET", "GROCERY", "CLOTHING"]) {
   check(offered.includes(want), `Business type offered: ${want}`);
 }
 check(!offered.includes("HOTEL"), "HOTEL no longer offered for new onboarding");

@@ -167,6 +167,34 @@ const createOrUpdateSetting = async (req, res) => {
     // Part 10: POS Ordering screen is mandatory — always ON.
     data.enablePosOrdering = true;
 
+    // ─── Business-capability guard (server-side, never frontend-trusted) ───
+    // A non-food tenant must not be able to activate restaurant-only settings
+    // by manipulating the request. Food-only fields are silently dropped or
+    // forced OFF for non-food verticals; food tenants are unaffected.
+    let businessCapabilities = null;
+    try {
+      const { platformPrisma } = require('../config/tenantPrisma');
+      const { getBusinessCapabilities } = require('../utils/businessCapabilities');
+      const platformRestaurant = await platformPrisma.restaurant.findUnique({
+        where: { id: tenantRestaurantId },
+        select: { businessType: true },
+      });
+      businessCapabilities = getBusinessCapabilities(platformRestaurant && platformRestaurant.businessType);
+    } catch (capErr) {
+      console.error('[settings] capability lookup failed:', capErr.message);
+      // Fail open to full capabilities — food tenants must never be degraded
+      // by a transient platform lookup failure.
+      businessCapabilities = require('../utils/businessCapabilities').BUSINESS_CAPABILITIES.RESTAURANT;
+    }
+    if (businessCapabilities && !businessCapabilities.dietary) {
+      delete data.dietaryMode; // meaningless for non-food verticals
+    }
+    if (businessCapabilities && !businessCapabilities.kitchen) {
+      data.enableKitchen = false;
+      data.autoPrintKOT = false;
+      data.autoGenerateKOT = false;
+    }
+
     const existing = await prisma.restaurantSetting.findUnique({
       where: {
         restaurantId: tenantRestaurantId
@@ -301,6 +329,27 @@ const getSetting = async (req, res) => {
 
     // Override businessMode with the subscription-derived value
     const settingWithMode = { ...setting, businessMode: effectiveBusinessMode };
+
+    // Expose the platform businessType + resolved capabilities so the frontend
+    // can drive food/retail-conditional UI from ONE server-resolved source
+    // (never client-supplied). Caps are booleans only — no sensitive data.
+    let businessType = null;
+    let capabilities = null;
+    try {
+      const { platformPrisma } = require('../config/tenantPrisma');
+      const { getBusinessCapabilities } = require('../utils/businessCapabilities');
+      const platformRestaurant = await platformPrisma.restaurant.findUnique({
+        where: { id: req.user.restaurantId },
+        select: { businessType: true },
+      });
+      businessType = platformRestaurant ? platformRestaurant.businessType : null;
+      capabilities = getBusinessCapabilities(businessType);
+    } catch (capErr) {
+      console.error('[settings] capability lookup failed:', capErr.message);
+      capabilities = require('../utils/businessCapabilities').BUSINESS_CAPABILITIES.RESTAURANT;
+    }
+    settingWithMode.businessType = businessType;
+    settingWithMode.capabilities = capabilities;
 
     return res.json({
       success: true,

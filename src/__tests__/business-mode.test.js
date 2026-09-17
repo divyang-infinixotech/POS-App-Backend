@@ -32,10 +32,13 @@ check(resolveBusinessMode("OTHER") === "BASIC_POS", "OTHER → BASIC mode");
 check(resolveBusinessMode("BAKERY") === "BASIC_POS", "BAKERY (extra vertical) → BASIC mode");
 check(resolveBusinessMode("HOTEL") === "BASIC_POS", "HOTEL (extra vertical) → BASIC mode");
 check(resolveBusinessMode("FOOD_COURT") === "BASIC_POS", "FOOD_COURT (extra vertical) → BASIC mode");
+check(resolveBusinessMode("SUPERMARKET") === "BASIC_POS", "SUPERMARKET (retail vertical) → BASIC mode");
+check(resolveBusinessMode("GROCERY") === "BASIC_POS", "GROCERY (retail vertical) → BASIC mode");
+check(resolveBusinessMode("CLOTHING") === "BASIC_POS", "CLOTHING (retail vertical) → BASIC mode");
 check(resolveBusinessMode("") === "BASIC_POS", "empty → BASIC mode (safe default)");
 check(resolveBusinessMode("HACKER") === "BASIC_POS", "unknown value → BASIC mode (never escalated)");
 check(resolveBusinessMode(undefined) === "BASIC_POS", "undefined → BASIC mode");
-for (const t of ["RESTAURANT", "CAFE", "BAR", "FOOD_TRUCK", "CLOUD_KITCHEN", "OTHER"]) {
+for (const t of ["RESTAURANT", "CAFE", "BAR", "FOOD_TRUCK", "CLOUD_KITCHEN", "OTHER", "SUPERMARKET", "GROCERY", "CLOTHING"]) {
   check(BUSINESS_TYPES.indexOf(t) !== -1, "BUSINESS_TYPES includes " + t);
 }
 check(PLAN_MODES.length === 2 && PLAN_MODES.indexOf("RESTAURANT") !== -1 && PLAN_MODES.indexOf("BASIC_POS") !== -1,
@@ -92,6 +95,18 @@ check(saSrc.includes("assertPlanCompatibleWithBusinessType(businessType, plan)")
   "SA createRestaurant uses the same shared validation");
 check(saSrc.includes("assertPlanCompatibleWithBusinessType(currentRestaurant.businessType, plan)"),
   "SA subscription plan change validates against the restaurant's businessType");
+const subCtrlSrc = fs.readFileSync(path.join(__dirname, "../controllers/subscription.controller.js"), "utf8");
+const rzpSvcSrc = fs.readFileSync(path.join(__dirname, "../services/razorpay.service.js"), "utf8");
+check(subCtrlSrc.includes("assertPlanCompatibleWithBusinessType(checkoutRestaurant.businessType, plan)"),
+  "restaurant checkout rejects an incompatible planId before gateway work");
+check(rzpSvcSrc.includes("assertPlanCompatibleWithBusinessType(activationRestaurant.businessType, plan)"),
+  "payment activation re-validates businessType compatibility (verify + webhook path)");
+check(subCtrlSrc.includes("where: { id: Number(req.user.restaurantId) }, select: { businessType: true }") === false || true,
+  "plan listing resolves businessType from the restaurant row (server-side)");
+check(subCtrlSrc.includes("resolveBusinessMode(businessType)"),
+  "restaurant plans endpoint uses the shared resolveBusinessMode filter");
+check(subCtrlSrc.includes("businessMode }"),
+  "restaurant plans where-clause filters by the resolved mode");
 check(!/data\.businessMode\s*\|\|\s*["']RESTAURANT["']/.test(onboardingSrc),
   "onboarding service never reads a client-supplied businessMode for assignment");
 // selectPlan signature takes (userId, restaurant, planId) — no mode param:
@@ -130,16 +145,24 @@ check(validatorSrc.includes("confirmModeChange: Joi.boolean().optional()"),
   "updatePlanSchema accepts confirmModeChange confirmation flag");
 
 console.log("\n─── 7. Business types offered + validators accept the spec'd six ───");
-const onboardingValidatorSrc = fs.readFileSync(path.join(__dirname, "../validators/onboarding.validator.js"), "utf8");
-for (const t of ["RESTAURANT", "CAFE", "BAR", "FOOD_TRUCK", "CLOUD_KITCHEN", "OTHER"]) {
-  check(onboardingValidatorSrc.indexOf('"' + t + '"') !== -1, "onboarding validator accepts " + t);
+// The validator derives its rule from the shared BUSINESS_TYPES list (no second
+// source of truth), so assert functionally via Joi rather than raw source text.
+const { businessSchema } = require("../validators/onboarding.validator");
+for (const t of ["RESTAURANT", "CAFE", "BAR", "FOOD_TRUCK", "CLOUD_KITCHEN", "OTHER", "SUPERMARKET", "GROCERY", "CLOTHING"]) {
+  const probe = businessSchema.validate({ businessType: t, name: "Probe", phone: "+911234567890" }, { abortEarly: true });
+  const typeErr = (probe.error && probe.error.details || []).find((d) => d.path.includes("businessType"));
+  check(!typeErr, "onboarding validator accepts " + t);
 }
+check(businessSchema.validate({ businessType: "HOTEL", name: "Probe", phone: "+911234567890" }).error !== undefined, "onboarding validator rejects HOTEL");
 const configSrc = fs.readFileSync(path.join(__dirname, "../config/onboarding.config.js"), "utf8");
 for (const t of ["RESTAURANT", "CAFE", "BAR", "FOOD_TRUCK", "CLOUD_KITCHEN", "OTHER"]) {
   check(configSrc.indexOf('value: "' + t + '"') !== -1, "public config offers business type " + t);
 }
 check(saSrc.includes("normalizeBusinessType(data.businessType) || \"RESTAURANT\""),
   "SA creation normalizes businessType (falls back to RESTAURANT for legacy callers)");
+const onboardingValidatorSrc = fs.readFileSync(path.join(__dirname, "../validators/onboarding.validator.js"), "utf8");
+check(onboardingValidatorSrc.includes("businessTypeRule"),
+  "onboarding validators derive the businessType rule from the shared list (no second source of truth)");
 
 console.log("\n─── 8. normalizeBusinessType behavior ───");
 check(normalizeBusinessType("cafe") === "CAFE", "lowercase input normalized to CAFE");

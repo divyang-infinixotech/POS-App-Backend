@@ -69,38 +69,26 @@ function supportContacts(cfg) {
 }
 
 /**
- * Deliver one EmailLog row through SMTP. Returns { ok, error }.
- * Transport construction mirrors email.config.verifySmtp.
+ * Deliver one EmailLog row through the ACTIVE transport (Microsoft Graph when
+ * MICROSOFT_GRAPH_ENABLED=true, otherwise the legacy SMTP transport).
+ * Returns { ok, messageId? | error, provider }.
+ *
+ * NOTE: Graph readiness is checked by the transport itself — the SMTP host/
+ * fromEmail preconditions below apply to SMTP mode only, so an Graph-mode
+ * deployment without SMTP credentials is still fully functional.
  */
 async function deliver(row) {
-  const cfg = await getEmailConfig();
-  if (!cfg.enabled) return { ok: false, error: "Email service is disabled" };
-  if (!cfg.host || !cfg.fromEmail) return { ok: false, error: "SMTP is not configured (host/from email missing)" };
+  const { deliverEmail, activeTransportName } = require("./email/transport");
+  const provider = activeTransportName();
 
-  const nodemailer = require("nodemailer");
-  const transporter = nodemailer.createTransport({
-    host: cfg.host,
-    port: Number(cfg.port) || 587,
-    secure: !!cfg.secure,
-    auth: cfg.user ? { user: cfg.user, pass: cfg.password } : undefined,
-    connectionTimeout: 10 * 1000,
-    greetingTimeout: 10 * 1000,
-    socketTimeout: 15 * 1000,
-  });
-  try {
-    const from = cfg.fromName ? `"${cfg.fromName}" <${cfg.fromEmail}>` : cfg.fromEmail;
-    const info = await transporter.sendMail({
-      from,
-      to: row.to,
-      subject: row.subject,
-      html: row.payloadHtml || undefined,
-      text: row.payloadText || undefined,
-      replyTo: cfg.replyTo || undefined,
-    });
-    return { ok: true, messageId: info && info.messageId };
-  } finally {
-    try { transporter.close(); } catch (_) { /* ignore */ }
+  if (provider === "smtp") {
+    // Legacy preconditions preserved for SMTP mode.
+    const cfg = await getEmailConfig();
+    if (!cfg.enabled) return { ok: false, provider, error: "Email service is disabled" };
+    if (!cfg.host || !cfg.fromEmail) return { ok: false, provider, error: "SMTP is not configured (host/from email missing)" };
   }
+
+  return deliverEmail(row);
 }
 
 /**
