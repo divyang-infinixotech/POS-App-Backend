@@ -86,7 +86,29 @@ const requireFeature = (feature) => {
       const features = Array.isArray(subscription.features) && subscription.features.length > 0
         ? subscription.features
         : DEFAULT_FEATURES;
-      if (!required.some((f) => features.includes(f))) {
+
+      // §16 read-time normalization (capability resolution, not scattered
+      // businessType checks): a BASIC_POS FOOD business (kitchen capability
+      // true, tables false) always carries kitchen + active_orders even if its
+      // plan snapshot predates the BASIC_POS production workflow — kitchen
+      // status updates and Active Orders are core to that workflow. A retail
+      // QUICK_BILLING business (kitchen capability false) can NEVER gain them
+      // here, and restaurants are untouched (their plans already include both).
+      let effectiveFeatures = features;
+      try {
+        const _rest = await prisma.restaurant.findUnique({
+          where: { id: req.user.restaurantId },
+          select: { businessType: true },
+        });
+        const _caps = getBusinessCapabilities(_rest ? _rest.businessType : null);
+        if (_caps.kitchen === true && _caps.tables !== true) {
+          effectiveFeatures = Array.from(new Set([...features, "kitchen", "active_orders"]));
+        }
+      } catch (_capErr) {
+        // Lookup failed → keep the stored snapshot (fail closed, no upgrade)
+      }
+
+      if (!required.some((f) => effectiveFeatures.includes(f))) {
         const label = PLAN_FEATURES[required[0]] ? PLAN_FEATURES[required[0]].label : required[0];
         return res.status(403).json({
           success: false,

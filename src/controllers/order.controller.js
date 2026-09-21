@@ -17,6 +17,7 @@ const {
     generateKOTNumber
 } = require("../utils/numberGenerator");
 const { emitOrderEvent } = require("../services/socket");
+const { getBusinessCapabilities } = require("../utils/businessCapabilities");
 const {
     deductStockForOrderCreation,
     deductStockForAddedItems,
@@ -30,9 +31,7 @@ const createOrder = async (req, res) => {
 
         const {
 
-            tableId,
             customerId,
-            orderType,
 
             discountType,
             discountValue = 0,
@@ -44,11 +43,42 @@ const createOrder = async (req, res) => {
             items
 
         } = req.body;
+        // tableId/orderType are kept MUTABLE (let, not const-destructured):
+        // the BASIC_POS guard below rewrites them (counter order type, no        // table). A previous version destructured them as const and reassigned        // them, which threw "Assignment to constant variable" → 500 on every        // BASIC_POS production order (root cause of the reported bug).
+        let tableId = req.body.tableId;
+        let orderType = req.body.orderType;
         // Order-type assignment (Takeaway vs Dine In / Floor): a staff member
         // restricted to one order type cannot place the other — enforced
         // server-side (frontend default selection is convenience only).
         const _otErr = await orderTypeAccessError(prisma, req.user, orderType);
         if (_otErr) return errorResponse(res, _otErr, 403);
+
+        // ── BASIC_POS production-mode guard (backend authoritative, §3/§15) ──
+        // A BASIC_POS food business creates counter orders with NO table/floor.
+        // When its plan mode is BASIC_POS, a client-supplied tableId is ignored
+        // (never resolved, never attached) — fake table ids cannot sneak a
+        // dine-in workflow into a counter business. Restaurants are unaffected.
+        let basicPosFood = false;
+        try {
+            const { platformPrisma } = require("../config/tenantPrisma");
+            const platformRestaurant = await platformPrisma.restaurant.findUnique({
+                where: { id: req.user.restaurantId },
+                select: { businessType: true },
+            });
+            const capabilities = getBusinessCapabilities(platformRestaurant && platformRestaurant.businessType);
+            basicPosFood = capabilities.kitchen === true && capabilities.tables !== true;
+        } catch (modeErr) {
+            console.error("[Order] capability lookup failed (fail-open to restaurant rules):", modeErr.message);
+            basicPosFood = false;
+        }        if (basicPosFood) {
+            // Force the counter order type + drop any table reference for
+            // BASIC_POS — every order from a counter business is a counter
+            // order regardless of the client-supplied type (§3). New immutable
+            // locals are derived (no reassignment) so this branch can never
+            // reintroduce the "Assignment to constant variable" failure.
+            orderType = "COUNTER_SALE";
+            tableId = null;
+        }
 
         // Validate table belongs to current restaurant (skip for COUNTER_SALE)
         if (tableId && orderType !== "COUNTER_SALE") {
@@ -257,13 +287,15 @@ const createOrder = async (req, res) => {
             // If notification fails inside a $transaction, PostgreSQL aborts
             // the entire transaction, causing 25P02 for subsequent operations.
 
+            const createdOrderItems = [];
             for (const item of orderItems) {
-                await tx.orderItem.create({
+                const createdItem = await tx.orderItem.create({
                     data: {
                         orderId: createdOrder.id,
                         ...item
                     }
                 });
+                createdOrderItems.push(createdItem);
             }
 
             // ── Reserve item stock immediately when the order is placed ──
@@ -276,12 +308,65 @@ const createOrder = async (req, res) => {
                 { id: createdOrder.id, orderNo: createdOrder.orderNo, orderItems },
                 req.user.restaurantId,
                 req.user.id
-            );
-
-            // NOTE: KOT creation moved OUTSIDE the transaction.
+            );            // NOTE: KOT creation moved OUTSIDE the transaction.
             // If KOT creation fails inside a $transaction (e.g. unique constraint
             // on kotNo), PostgreSQL aborts the entire transaction, causing 25P02
             // for the final order.findUnique() query.
+
+            // ── BASIC_POS production mode: auto-create the KOT INSIDE the same
+            // transaction (§3/§9) ──
+            // The order and its kitchen ticket commit together or not at all —
+            // no partially-created state. In QUICK BILLING mode
+            // (enableCounterSale ON) NO KOT is created — items go straight to
+            // payment. Retail QUICK_BILLING tenants can never reach this branch
+            // (basicPosFood requires the kitchen capability), so a supermarket
+            // order can never produce a KOT.
+            if (orderType === "COUNTER_SALE" && basicPosFood) {
+                const settingRow = await tx.restaurantSetting.findFirst({
+                    where: { restaurantId: req.user.restaurantId },
+                    select: { enableCounterSale: true }
+                });
+                const quickBillingOn = settingRow ? settingRow.enableCounterSale === true : false;
+                if (!quickBillingOn) {
+                    // The KOTItem junction requires REAL OrderItem ids — the
+                    // payload objects in `orderItems` have none (a previous
+                    // version mapped them directly and Prisma rejected
+                    // "Argument orderItemId is missing", rolling back the
+                    // whole order). `createdOrderItems` are the persisted rows
+                    // returned by tx.orderItem.create above.
+                    const basicPosAutoKot = await tx.kOT.create({
+                        data: {
+                            restaurantId: req.user.restaurantId,
+                            kotNo: await generateKOTNumber(tx),
+                            orderId: createdOrder.id,
+                            status: "PENDING",
+                            notes: notes || null
+                        }
+                    });
+                    const initialItems = createdOrderItems;
+                    if (initialItems.length > 0) {
+                        await tx.kOTItem.createMany({
+                            data: initialItems.map(oi => ({
+                                kotId: basicPosAutoKot.id,
+                                orderItemId: oi.id,
+                                menuItemId: oi.menuItemId,
+                                quantity: oi.quantity,
+                                price: oi.price,
+                                notes: oi.notes || null
+                            }))
+                        });
+                        for (const oi of initialItems) {
+                            await tx.orderItem.update({
+                                where: { id: oi.id },
+                                data: { sentQuantity: oi.quantity }
+                            });
+                        }
+                    }
+                    // Expose the auto-KOT id on the created order so the
+                    // post-transaction read (below) includes it in the response.
+                    createdOrder._basicPosAutoKotId = basicPosAutoKot.id;
+                }
+            }
 
             return await tx.order.findUnique({
                 where: {
@@ -346,10 +431,9 @@ const createOrder = async (req, res) => {
             } catch (kotErr) {
                 console.error("[Order] KOT creation failed (non-critical):", kotErr.message);
             }
-        }
-
-        // Attach the auto-KOT to the order response so the frontend can use it
-        // without making a second /api/kot call.
+        }        // Attach the auto-KOT to the order response so the frontend can use it
+        // without making a second /api/kot call. The BASIC_POS auto-KOT is
+        // already included by the transaction's final read (kot relation).
         if (autoKot) {
             order.kot = [{ id: autoKot.id, kotNo: autoKot.kotNo, status: autoKot.status }];
         }
@@ -469,21 +553,51 @@ const getActiveOrders = async (req, res) => {
         // see active orders on their assigned floors (Part 12). ADMIN/MANAGER and
         // unassigned staff are restaurant-wide (unchanged behavior).
         const _floorScope = await orderFloorScopeFor(prisma, req.user);
+
+        // ── BASIC_POS production mode (§5): counter orders ARE active orders ──
+        // When a BASIC_POS food business runs with "Enable Basic POS Quick
+        // Billing" OFF, its COUNTER_SALE production orders must appear here
+        // (PENDING → PREPARING → READY → Bill). Retail counter sales and
+        // BASIC_POS quick-billing sales (toggle ON) are still excluded —
+        // those complete at the counter and have no production workflow.
+        let counterSaleInActiveOrders = false;
+        try {
+            const { platformPrisma } = require("../config/tenantPrisma");
+            const platformRestaurant = await platformPrisma.restaurant.findUnique({
+                where: { id: req.user.restaurantId },
+                select: { businessType: true },
+            });
+            const capabilities = getBusinessCapabilities(platformRestaurant && platformRestaurant.businessType);
+            if (capabilities.kitchen === true && capabilities.tables !== true) {
+                const settingRow = await prisma.restaurantSetting.findFirst({
+                    where: { restaurantId: req.user.restaurantId },
+                    select: { enableCounterSale: true }
+                });
+                counterSaleInActiveOrders = !(settingRow && settingRow.enableCounterSale === true);
+            }
+        } catch (capErr) {
+            console.error("[Order] Active Orders capability lookup failed (defaulting to restaurant behavior):", capErr.message);
+        }
+
         const orders = await prisma.order.findMany({
             where: {
                 isDeleted: false,
                 status: {
                     notIn: ["COMPLETED", "CANCELLED"]
                 },
-                // COUNTER_SALE orders are quick-billing only; never show in Active Orders
-                orderType: {
-                    not: "COUNTER_SALE"
-                },
+                // COUNTER_SALE orders are quick-billing only; never show in Active Orders —
+                // EXCEPT for a BASIC_POS food business in production mode (§5), where
+                // counter orders carry the full KOT/kitchen production workflow.
+                ...(counterSaleInActiveOrders ? {} : { orderType: { not: "COUNTER_SALE" } }),
                 ...(_floorScope || {})
             },
             include: {
                 customer: true,
+                // §12/§16: the real Order → RestaurantTable relation — the card's
+                // prominent TABLE identifier renders from this, never a hardcode.
                 table: true,
+                // Service-staff attribution shown on the order card (real name).
+                user: { select: { id: true, name: true, role: true } },
                 orderItems: {
                     include: {
                         menuItem: true
@@ -561,7 +675,13 @@ const getOrderById = async (req, res) => {
 
                     customer: true,
 
-                    table: true,
+                    // table.include.floor — the Active Order Preview shows the
+                    // floor name when the table has one (additive include only).
+                    table: {
+                        include: {
+                            floor: true
+                        }
+                    },
 
                     kot: {
                         select: {
@@ -579,6 +699,13 @@ const getOrderById = async (req, res) => {
 
                         }
 
+                    },
+
+                    // Applied discount history (Discounts & Promotions module) —
+                    // additive include so the billing screen can render the
+                    // applied promotion chips from the persisted snapshot.
+                    orderDiscounts: {
+                        orderBy: { createdAt: "asc" }
                     }
 
                 }

@@ -195,6 +195,15 @@ const createOrUpdateSetting = async (req, res) => {
       data.autoGenerateKOT = false;
     }
 
+    // ── §13: "Enable Basic POS Quick Billing" is a BASIC_POS food-business toggle ──
+    // QUICK_BILLING retail tenants are ALWAYS quick billing by mode — the
+    // toggle must stay false so it can never be (mis)read as a food-business
+    // production flag, and the Settings UI hides it for retail. BASIC_POS
+    // food businesses keep the toggle as the production/quick-billing switch.
+    if (businessCapabilities && businessCapabilities.kitchen !== true) {
+      data.enableCounterSale = false;
+    }
+
     const existing = await prisma.restaurantSetting.findUnique({
       where: {
         restaurantId: tenantRestaurantId
@@ -306,6 +315,7 @@ const getSetting = async (req, res) => {
     // Derive the effective businessMode from the subscription plan (authoritative source)
     // Subscription is a PLATFORM model (public schema) — must use platformPrisma
     let effectiveBusinessMode = (setting && setting.businessMode) || 'restaurant';
+    let subscriptionBusinessMode = null;
     try {
       const { platformPrisma } = require('../config/tenantPrisma');
       const subscription = await platformPrisma.subscription.findFirst({
@@ -313,7 +323,10 @@ const getSetting = async (req, res) => {
         select: { id: true, businessMode: true, status: true, planId: true }
       });
       if (subscription && subscription.businessMode) {
-        effectiveBusinessMode = subscription.businessMode === 'BASIC_POS' ? 'counter' : 'restaurant';
+        subscriptionBusinessMode = subscription.businessMode;
+        // Both basic modes (BASIC_POS / QUICK_BILLING) drive the 'counter' UI;
+        // only RESTAURANT drives the 'restaurant' UI.
+        effectiveBusinessMode = subscription.businessMode === 'RESTAURANT' ? 'restaurant' : 'counter';
       }
     } catch (subErr) {
       console.error('[Settings] Subscription lookup failed:', subErr.message);
@@ -327,8 +340,13 @@ const getSetting = async (req, res) => {
       });
     }
 
-    // Override businessMode with the subscription-derived value
-    const settingWithMode = { ...setting, businessMode: effectiveBusinessMode };
+    // Override businessMode with the subscription-derived value.
+    // §2: subscriptionBusinessMode exposes the RAW plan mode (RESTAURANT |
+    // BASIC_POS | QUICK_BILLING) so the frontend can tell a BASIC_POS food
+    // business (production vs quick-billing via enableCounterSale) apart from
+    // a QUICK_BILLING retail business (always quick billing) — without ever
+    // trusting a client-supplied value.
+    const settingWithMode = { ...setting, businessMode: effectiveBusinessMode, subscriptionBusinessMode };
 
     // Expose the platform businessType + resolved capabilities so the frontend
     // can drive food/retail-conditional UI from ONE server-resolved source
@@ -350,6 +368,22 @@ const getSetting = async (req, res) => {
     }
     settingWithMode.businessType = businessType;
     settingWithMode.capabilities = capabilities;
+
+    // ── §16/§5: normalize STALE production-module values for a kitchen-capable ──
+    // food business. Legacy rows written before the BASIC_POS production
+    // workflow may carry enableKitchen:false / enableActiveOrders:false — the
+    // sidebar filter and the route guards consume these values, so a stale row
+    // silently hides Active Orders even though the order/KOT APIs work. The
+    // capability layer is authoritative (one source of truth for sidebar,
+    // guard and page):
+    //   BASIC_POS food + Quick Billing OFF → kitchen ON, Active Orders ON
+    //   BASIC_POS food + Quick Billing ON  → Active Orders OFF (no production)
+    //   retail QUICK_BILLING (kitchen=false) → can NEVER gain them
+    //   RESTAURANT → untouched (its row is explicit)
+    if (capabilities && capabilities.kitchen === true && capabilities.tables !== true) {
+      settingWithMode.enableKitchen = true;
+      settingWithMode.enableActiveOrders = settingWithMode.enableCounterSale !== true;
+    }
 
     return res.json({
       success: true,

@@ -38,7 +38,12 @@ router.post(
     protect,
     requireBusinessCapability("kot", "Kitchen (KOT)"),
     requireFeature("kitchen"),
-    authorize("ADMIN", "MANAGER"),
+    // CASHIER is included: a BASIC_POS food business in production mode is
+    // cashier-operated, and the cashier creates/prints the KOT right after
+    // placing the counter order (§4). Retail QUICK_BILLING tenants are still
+    // rejected upstream by requireBusinessCapability("kot") — kitchen/kot
+    // capabilities are false for every retail vertical.
+    authorize("ADMIN", "MANAGER", "CASHIER"),
     validate(createKOTSchema),
     createKOT
 );
@@ -79,6 +84,7 @@ router.get(
 router.patch(
     "/:id/status",
     protect,
+    requireBusinessCapability("kot", "Kitchen (KOT)"),
     requireFeature("kitchen"),
     authorize("ADMIN", "MANAGER", "KITCHEN"),
     updateKOTStatus

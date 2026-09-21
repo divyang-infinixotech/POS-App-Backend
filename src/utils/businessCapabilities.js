@@ -37,15 +37,18 @@ const BUSINESS_CAPABILITIES = {
     barcode: true, inventory: true, stock: true, variants: false,
     customers: true,
   },
+  // CAFE/BAR are BASIC_POS food businesses (§11): counter workflow with
+  // kitchen/KOT, no dine-in seating (tables/floors off — same as BAKERY,
+  // FOOD_TRUCK, CLOUD_KITCHEN). RESTAURANT keeps its full table workflow.
   CAFE: {
     food: true, dietary: true, kitchen: true, kot: true,
-    tables: true, floors: true, menu: true, products: false,
+    tables: false, floors: false, menu: true, products: false,
     barcode: true, inventory: true, stock: true, variants: false,
     customers: true,
   },
   BAR: {
     food: true, dietary: true, kitchen: true, kot: true,
-    tables: true, floors: true, menu: true, products: false,
+    tables: false, floors: false, menu: true, products: false,
     barcode: true, inventory: true, stock: true, variants: false,
     customers: true,
   },
@@ -67,8 +70,12 @@ const BUSINESS_CAPABILITIES = {
     barcode: true, inventory: true, stock: true, variants: false,
     customers: true,
   },
+  // BAKERY is a BASIC_POS food business (café/bakery/bar/food-truck/cloud-
+  // kitchen family): it prepares food, so the production workflow (KOT →
+  // kitchen → Active Orders → Ready → Bill) applies when the tenant runs in
+  // production mode. Tables/floors stay OFF — no dine-in seating workflow.
   BAKERY: {
-    food: true, dietary: true, kitchen: false, kot: false,
+    food: true, dietary: true, kitchen: true, kot: true,
     tables: false, floors: false, menu: true, products: false,
     barcode: true, inventory: true, stock: true, variants: false,
     customers: true,
@@ -162,6 +169,34 @@ function getBusinessCapabilities(businessType) {
   return BUSINESS_CAPABILITIES[key] || DEFAULT_CAPABILITIES;
 }
 
+/**
+ * Boolean convenience: is this business type a BASIC_POS food business
+ * (café/bakery/bar/food-truck/cloud-kitchen family)? These are the verticals
+ * the "Enable Basic POS Quick Billing" toggle applies to — production mode
+ * (OFF) vs quick billing (ON). Retail QUICK_BILLING verticals are never
+ * BASIC_POS food businesses.
+ */
+function isBasicPosFoodBusiness(businessType) {
+  const mode = resolveModeForType(businessType);
+  return mode === "BASIC_POS";
+}
+
+/** Local type → plan-mode map (mirrors utils/businessMode.js — kept here so
+ * capabilities never import the mode module and vice versa). */
+function resolveModeForType(businessType) {
+  const key = String(businessType || "").trim().toUpperCase();
+  const map = {
+    RESTAURANT: "RESTAURANT",
+    FOOD_COURT: "RESTAURANT",
+    CAFE: "BASIC_POS",
+    BAR: "BASIC_POS",
+    BAKERY: "BASIC_POS",
+    FOOD_TRUCK: "BASIC_POS",
+    CLOUD_KITCHEN: "BASIC_POS",
+  };
+  return map[key] || "QUICK_BILLING";
+}
+
 /** Boolean convenience: does this business type expose dietary features? */
 function supportsDietary(businessType) {
   return getBusinessCapabilities(businessType).dietary === true;
@@ -171,6 +206,37 @@ function supportsDietary(businessType) {
 function supportsKitchen(businessType) {
   const c = getBusinessCapabilities(businessType);
   return c.kitchen === true || c.kot === true;
+}
+
+/**
+ * Which internal UserRole values are VISIBLE/SELECTABLE for this business
+ * type — the ONE authoritative mapping for user-facing staff-role availability
+ * (Staff Roster Add/Edit selectors, staff-discount role chips, etc.). Derived
+ * from the SAME capability matrix every other feature uses (never a scattered
+ * businessType check):
+ *   - MANAGER/CASHIER are core POS staff in every vertical
+ *   - KITCHEN is selectable only where the kitchen capability exists
+ *   - WAITER is selectable only where a service/waiter workflow exists
+ *     (dine-in tables or floors)
+ * Legacy KITCHEN users in a retail tenant are not deleted; the role simply
+ * never appears as a selectable option where the capability is absent.
+ */
+function getVisibleStaffRoles(businessType) {
+  const c = getBusinessCapabilities(businessType);
+  const roles = ["MANAGER", "CASHIER"];
+  if (c.kitchen === true) roles.push("KITCHEN");
+  if (c.tables === true || c.floors === true) roles.push("WAITER");
+  return roles;
+}
+
+/**
+ * Which internal UserRole values may RECEIVE a staff discount for this
+ * business type. Role VISIBILITY and RECEIVABILITY share ONE list — the UI
+ * renders these roles as chips, the backend validates configured roles and
+ * recipients against it.
+ */
+function staffDiscountRoles(businessType) {
+  return getVisibleStaffRoles(businessType);
 }
 
 /**
@@ -189,5 +255,8 @@ module.exports = {
   getBusinessCapabilities,
   supportsDietary,
   supportsKitchen,
+  isBasicPosFoodBusiness,
+  staffDiscountRoles,
+  getVisibleStaffRoles,
   catalogNaming,
 };
