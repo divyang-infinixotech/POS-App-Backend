@@ -42,6 +42,7 @@ const subscriptionRoutes = require("./routes/subscription.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const superAdminRoutes = require("./routes/super-admin.routes");
 const onboardingRoutes = require("./routes/onboarding.routes");
+const discountRoutes = require("./routes/discount.routes");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -163,6 +164,7 @@ app.use("/api/floors", floorRoutes);
 app.use("/api/restaurants", restaurantRoutes);
 app.use("/api/subscriptions", subscriptionRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/discounts", discountRoutes);
 
 // ─── Super Admin Routes ───
 app.use("/api/super-admin", superAdminRoutes);

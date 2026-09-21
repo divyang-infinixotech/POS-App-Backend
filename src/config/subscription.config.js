@@ -79,17 +79,21 @@ const AVAILABLE_RESTAURANT_MODULES = [
 ];
 
 // ─── Business-mode capability map (SINGLE authoritative source) ─────────────
-// Modules that only make sense with a full restaurant workflow (floors,
-// tables, kitchen/KOT). A BASIC_POS plan can never carry them — the plan
-// editor hides them and the backend strips them from every create/update
-// payload, so no client can attach a Restaurant-only module to a Basic plan.
-// Everything else in AVAILABLE_RESTAURANT_MODULES applies to both modes.
-const RESTAURANT_ONLY_MODULES = ["floors", "tables", "kitchen"];
+// Modules that only make sense with a full restaurant DINE-IN workflow
+// (floors, tables). Kitchen/KOT is NOT restaurant-only: BASIC_POS food
+// businesses (café/bakery/bar/food-truck/cloud-kitchen) run the production
+// workflow Order → KOT → Active Orders → Ready → Bill in their default mode
+// (spec §2/§11/§16), so a BASIC_POS plan CAN carry the kitchen module —
+// retail tenants stay blocked from KOT by the businessType capability layer
+// (requireBusinessCapability("kot") / requireBusinessCapability("kitchen")),
+// never by the plan mode alone.
+const RESTAURANT_ONLY_MODULES = ["floors", "tables"];
 
 /**
  * Modules selectable for a plan/business mode.
- * businessMode: "RESTAURANT" | "BASIC_POS" (unknown → RESTAURANT superset is
- * NOT granted; unknown falls back to BASIC_POS to stay restrictive).
+ * businessMode: "RESTAURANT" | "BASIC_POS" | "QUICK_BILLING" (unknown → the
+ * RESTAURANT superset is NOT granted; unknown falls back to the restrictive
+ * basic set).
  */
 function modulesForBusinessMode(businessMode) {
   const mode = String(businessMode || "BASIC_POS").toUpperCase();

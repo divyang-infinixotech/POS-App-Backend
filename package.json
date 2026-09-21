@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node src/__tests__/run.js && node src/__tests__/onboarding.test.js && node src/__tests__/email.test.js && node src/__tests__/email.templates.test.js && node src/__tests__/business-mode.test.js && node src/__tests__/business-capabilities.test.js && node src/__tests__/microsoft-graph.test.js",
+    "test": "node src/__tests__/run.js && node src/__tests__/onboarding.test.js && node src/__tests__/email.test.js && node src/__tests__/email.templates.test.js && node src/__tests__/email-provider.test.js && node src/__tests__/business-mode.test.js && node src/__tests__/business-capabilities.test.js && node src/__tests__/basic-pos-workflow.test.js && node src/__tests__/order-path-execution.test.js && node src/__tests__/discounts.test.js && node src/__tests__/microsoft-graph.test.js",
     "email:preview": "node scripts/email-preview.js",
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",

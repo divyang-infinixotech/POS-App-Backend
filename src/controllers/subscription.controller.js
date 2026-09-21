@@ -116,8 +116,15 @@ const listPlans = async (req, res) => {
     // actions (monthly purchases are rejected at checkout).
     const cycle = "YEARLY";
 
+    // The tenant's CURRENT plan is always listed even when a mapping change
+    // (e.g. QUICK_BILLING introduction) has re-categorized its business type —
+    // the tenant must keep seeing and renewing its own plan (backward compat).
     const plans = await prisma.plan.findMany({
-      where: { isActive: true, code: { not: "TRIAL" }, businessMode },
+      where: {
+        isActive: true,
+        code: { not: "TRIAL" },
+        OR: [{ businessMode }, ...(subscription && subscription.planId ? [{ id: subscription.planId }] : [])],
+      },
       include: {
         modulePermissions: {
           include: { module: { select: { key: true, name: true } } },
@@ -222,21 +229,26 @@ const createCheckout = async (req, res) => {
     // SERVER-SIDE business-type compatibility (plan security): a manually
     // submitted incompatible planId is rejected BEFORE any gateway/order work
     // — the restaurant's businessType is resolved from the DB, never trusted
-    // from the client.
+    // from the client. The check runs AFTER the subscription load so the
+    // tenant's CURRENT plan is exempt: a legacy tenant (e.g. businessType
+    // OTHER with a BASIC_POS plan assigned before QUICK_BILLING existed) can
+    // always renew its own plan, while switching to any other plan is gated
+    // by the resolved mode.
     const checkoutRestaurant = await prisma.restaurant.findUnique({
       where: { id: Number(restaurantId) },
       select: { businessType: true },
     });
+    const subscription = await prisma.subscription.findUnique({ where: { restaurantId } });
+    if (!subscription) return errorResponse(res, "No subscription found for this restaurant", 404);
     if (checkoutRestaurant) {
       try {
-        assertPlanCompatibleWithBusinessType(checkoutRestaurant.businessType, plan);
+        assertPlanCompatibleWithBusinessType(checkoutRestaurant.businessType, plan, null, {
+          isCurrentPlan: subscription.planId === plan.id,
+        });
       } catch (e) {
         return errorResponse(res, e.message, 400);
       }
     }
-
-    const subscription = await prisma.subscription.findUnique({ where: { restaurantId } });
-    if (!subscription) return errorResponse(res, "No subscription found for this restaurant", 404);
 
     const currentPlan = await prisma.plan.findUnique({ where: { id: subscription.planId } });
 

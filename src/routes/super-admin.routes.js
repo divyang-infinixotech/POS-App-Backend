@@ -11,7 +11,7 @@ const {
   getPlans, getPlanModules, createPlan, updatePlan, togglePlanActive, duplicatePlan, deletePlan,
   getPlatformReports, getPlatformSettings, updatePlatformSetting, updatePlatformSettings, getAuditLogs, getSupportTickets, updateSupportTicket, getPlatformNotifications,
   getGatewayStatus, saveGatewayConfig, testGateway, toggleGateway, getPaymentMetrics, listPayments,
-  getEmailSettings, updateEmailSettings, verifyEmailSettings, sendTestEmailHandler,
+  getEmailSettings, updateEmailSettings, verifyEmailSettings, sendTestEmailHandler, getEmailProvider, updateEmailProvider,
   getEmailLogs, resendEmailHandler, retryEmailQueueHandler,
 } = require("../controllers/super-admin.controller");
 
@@ -126,6 +126,9 @@ router.put("/settings", updatePlatformSettings);
 // ─── Email settings + delivery log (SUPER_ADMIN only — route-level authorize) ───
 router.get("/email/settings", getEmailSettings);
 router.put("/email/settings", updateEmailSettings);
+// Active provider selection (GRAPH | SMTP) — persisted in SystemSetting.
+router.get("/email/provider", getEmailProvider);
+router.put("/email/provider", updateEmailProvider);
 router.post("/email/verify", verifyEmailSettings);
 router.post("/email/test", sendTestEmailHandler);
 router.get("/email/logs", getEmailLogs);

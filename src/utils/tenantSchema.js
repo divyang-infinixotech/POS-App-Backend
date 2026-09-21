@@ -194,6 +194,18 @@ DO $$ BEGIN
   CREATE TYPE "DietaryType" AS ENUM ('VEG', 'NON_VEG');
 EXCEPTION WHEN duplicate_object THEN null;
 END $$;
+
+-- Discounts & Promotions: promotion types
+DO $$ BEGIN
+  CREATE TYPE "PromotionType" AS ENUM ('PERCENTAGE', 'FIXED_AMOUNT', 'STAFF', 'PROMO_CODE');
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+-- Discounts & Promotions: admin-set lifecycle switch (effective status is derived)
+DO $$ BEGIN
+  CREATE TYPE "DiscountStatus" AS ENUM ('ACTIVE', 'SCHEDULED', 'DISABLED');
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
 `;
 
 /**
@@ -672,6 +684,88 @@ CREATE TABLE IF NOT EXISTS "MergeGroupTable" (
   "originalOrderId" INTEGER NOT NULL,
   "createdAt" TIMESTAMP DEFAULT NOW()
 );
+
+-- ── Discounts & Promotions ────────────────────────────────────────────────
+-- Configured promotion (one per row). Scope (ENTIRE_ORDER / CATEGORIES /
+-- PRODUCTS) is resolved via the DiscountCategory / DiscountProduct junctions.
+CREATE TABLE IF NOT EXISTS "Discount" (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  type "PromotionType" NOT NULL,
+  "discountValue" DOUBLE PRECISION NOT NULL,
+  "maximumDiscountAmount" DOUBLE PRECISION,
+  "minimumOrderAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+  "startDate" TIMESTAMP NOT NULL,
+  "endDate" TIMESTAMP NOT NULL,
+  "startTime" TEXT,
+  "endTime" TEXT,
+  status "DiscountStatus" NOT NULL DEFAULT 'ACTIVE',
+  scope TEXT NOT NULL DEFAULT 'ENTIRE_ORDER',
+  "applicableDays" INTEGER NOT NULL DEFAULT 127,
+  "promoMethod" TEXT,
+  "customerEligibility" TEXT NOT NULL DEFAULT 'EVERYONE',
+  "stackable" BOOLEAN NOT NULL DEFAULT false,
+  "maxDiscountsPerOrder" INTEGER NOT NULL DEFAULT 1,
+  "usageLimit" INTEGER,
+  "usageCount" INTEGER NOT NULL DEFAULT 0,
+  "perCustomerLimit" INTEGER,
+  "staffRoles" TEXT,
+  "staffUserIds" JSONB,
+  "staffRequireApproval" BOOLEAN NOT NULL DEFAULT false,
+  "staffRoleMaxPercent" JSONB,
+  "archivedAt" TIMESTAMP,
+  "createdBy" INTEGER,
+  "createdAt" TIMESTAMP DEFAULT NOW(),
+  "updatedAt" TIMESTAMP DEFAULT NOW()
+);
+
+-- Junction: categories included in a CATEGORIES-scoped discount
+CREATE TABLE IF NOT EXISTS "DiscountCategory" (
+  id SERIAL PRIMARY KEY,
+  "discountId" INTEGER NOT NULL,
+  "categoryId" INTEGER NOT NULL,
+  "createdAt" TIMESTAMP DEFAULT NOW()
+);
+
+-- Junction: menu items included in a PRODUCTS-scoped discount
+CREATE TABLE IF NOT EXISTS "DiscountProduct" (
+  id SERIAL PRIMARY KEY,
+  "discountId" INTEGER NOT NULL,
+  "menuItemId" INTEGER NOT NULL,
+  "createdAt" TIMESTAMP DEFAULT NOW()
+);
+
+-- Promo code for a PROMO_CODE discount (1:1 with its Discount row)
+CREATE TABLE IF NOT EXISTS "PromoCode" (
+  id SERIAL PRIMARY KEY,
+  "discountId" INTEGER NOT NULL,
+  code TEXT NOT NULL,
+  "isActive" BOOLEAN NOT NULL DEFAULT true,
+  "createdAt" TIMESTAMP DEFAULT NOW(),
+  "updatedAt" TIMESTAMP DEFAULT NOW()
+);
+
+-- Append-only history of a discount applied to an order (snapshot — never
+-- recalculated when the promotion definition changes or expires later)
+CREATE TABLE IF NOT EXISTS "OrderDiscount" (
+  id SERIAL PRIMARY KEY,
+  "orderId" INTEGER NOT NULL,
+  "discountId" INTEGER,
+  "promoCodeId" INTEGER,
+  "discountType" TEXT NOT NULL,
+  "discountName" TEXT NOT NULL,
+  "discountValue" DOUBLE PRECISION NOT NULL,
+  "discountAmount" DOUBLE PRECISION NOT NULL,
+  "discountLabel" TEXT,
+  reason TEXT,
+  "appliedBy" INTEGER,
+  "approvedBy" INTEGER,
+  "staffUserId" INTEGER,
+  "staffName" TEXT,
+  "isManual" BOOLEAN NOT NULL DEFAULT false,
+  "createdAt" TIMESTAMP DEFAULT NOW()
+);
 `;
 
 /**
@@ -758,6 +852,24 @@ CREATE INDEX IF NOT EXISTS idx_mergegroup_status ON "MergeGroup"(status);
 CREATE INDEX IF NOT EXISTS idx_mergegrouptable_mergegroup ON "MergeGroupTable"("mergeGroupId");
 CREATE INDEX IF NOT EXISTS idx_mergegrouptable_table ON "MergeGroupTable"("tableId");
 CREATE INDEX IF NOT EXISTS idx_mergegrouptable_order ON "MergeGroupTable"("originalOrderId");
+CREATE UNIQUE INDEX IF NOT EXISTS idx_discountcategory_unique ON "DiscountCategory"("discountId", "categoryId");
+CREATE INDEX IF NOT EXISTS idx_discountcategory_discount ON "DiscountCategory"("discountId");
+CREATE INDEX IF NOT EXISTS idx_discountcategory_category ON "DiscountCategory"("categoryId");
+CREATE UNIQUE INDEX IF NOT EXISTS idx_discountproduct_unique ON "DiscountProduct"("discountId", "menuItemId");
+CREATE INDEX IF NOT EXISTS idx_discountproduct_discount ON "DiscountProduct"("discountId");
+CREATE INDEX IF NOT EXISTS idx_discountproduct_menu ON "DiscountProduct"("menuItemId");
+CREATE UNIQUE INDEX IF NOT EXISTS idx_promocode_code ON "PromoCode"(code);
+CREATE INDEX IF NOT EXISTS idx_promocode_discount ON "PromoCode"("discountId");
+CREATE INDEX IF NOT EXISTS idx_promocode_active ON "PromoCode"("isActive");
+CREATE INDEX IF NOT EXISTS idx_discount_status ON "Discount"(status);
+CREATE INDEX IF NOT EXISTS idx_discount_start ON "Discount"("startDate");
+CREATE INDEX IF NOT EXISTS idx_discount_end ON "Discount"("endDate");
+CREATE INDEX IF NOT EXISTS idx_discount_type ON "Discount"(type);
+CREATE INDEX IF NOT EXISTS idx_discount_archived ON "Discount"("archivedAt");
+CREATE INDEX IF NOT EXISTS idx_orderdiscount_order ON "OrderDiscount"("orderId");
+CREATE INDEX IF NOT EXISTS idx_orderdiscount_discount ON "OrderDiscount"("discountId");
+CREATE INDEX IF NOT EXISTS idx_orderdiscount_created ON "OrderDiscount"("createdAt");
+CREATE INDEX IF NOT EXISTS idx_orderdiscount_staffuser ON "OrderDiscount"("staffUserId");
 `;
 
 /**
@@ -894,6 +1006,43 @@ BEGIN
   AND conrelid = '"MergeGroupTable"'::regclass) THEN
     ALTER TABLE "MergeGroupTable" ADD CONSTRAINT "MergeGroupTable_originalOrderId_fkey"
       FOREIGN KEY ("originalOrderId") REFERENCES "Order"(id) ON DELETE RESTRICT ON UPDATE CASCADE;
+  END IF;
+
+  -- ── Discounts & Promotions ──
+  -- DiscountCategory.discountId → Discount.id
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'DiscountCategory_discountId_fkey') THEN
+    ALTER TABLE "DiscountCategory" ADD CONSTRAINT "DiscountCategory_discountId_fkey"
+      FOREIGN KEY ("discountId") REFERENCES "Discount"(id) ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+
+  -- DiscountProduct.discountId → Discount.id
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'DiscountProduct_discountId_fkey') THEN
+    ALTER TABLE "DiscountProduct" ADD CONSTRAINT "DiscountProduct_discountId_fkey"
+      FOREIGN KEY ("discountId") REFERENCES "Discount"(id) ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+
+  -- PromoCode.discountId → Discount.id
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'PromoCode_discountId_fkey') THEN
+    ALTER TABLE "PromoCode" ADD CONSTRAINT "PromoCode_discountId_fkey"
+      FOREIGN KEY ("discountId") REFERENCES "Discount"(id) ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+
+  -- OrderDiscount.orderId → Order.id
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'OrderDiscount_orderId_fkey') THEN
+    ALTER TABLE "OrderDiscount" ADD CONSTRAINT "OrderDiscount_orderId_fkey"
+      FOREIGN KEY ("orderId") REFERENCES "Order"(id) ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+
+  -- OrderDiscount.discountId → Discount.id (history survives promotion deletion)
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'OrderDiscount_discountId_fkey') THEN
+    ALTER TABLE "OrderDiscount" ADD CONSTRAINT "OrderDiscount_discountId_fkey"
+      FOREIGN KEY ("discountId") REFERENCES "Discount"(id) ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+
+  -- OrderDiscount.staffUserId → User.id (staff recipient; history survives staff removal)
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'OrderDiscount_staffUserId_fkey') THEN
+    ALTER TABLE "OrderDiscount" ADD CONSTRAINT "OrderDiscount_staffUserId_fkey"
+      FOREIGN KEY ("staffUserId") REFERENCES "User"(id) ON DELETE SET NULL ON UPDATE CASCADE;
   END IF;
 END
 $$;
@@ -1044,4 +1193,5 @@ module.exports = {
   TENANT_INDEXES_SQL,
   TENANT_FKS_SQL,
   TENANT_DEFAULTS_SQL,
+  schemaQualifySQL,
 };

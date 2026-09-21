@@ -15,6 +15,8 @@ const {
   supportsDietary,
   supportsKitchen,
   catalogNaming,
+  getVisibleStaffRoles,
+  staffDiscountRoles,
 } = require("../utils/businessCapabilities");
 const { normalizeBusinessType } = require("../utils/businessMode");
 
@@ -27,10 +29,10 @@ for (const t of ["RESTAURANT", "CAFE", "BAR", "FOOD_COURT"]) {
 }
 check(supportsDietary("RESTAURANT") === true, "supportsDietary(RESTAURANT) = true");
 
-console.log("\n─── 2. Bakery: food/dietary but NO tables/kitchen (spec §2) ───");
+console.log("\n─── 2. Bakery: BASIC_POS food business — kitchen/KOT, NO tables (spec §2/§11) ───");
 const b = getBusinessCapabilities("BAKERY");
 check(b.food === true && b.dietary === true, "BAKERY: food + dietary");
-check(b.kitchen === false && b.kot === false, "BAKERY: no kitchen/KOT");
+check(b.kitchen === true && b.kot === true, "BAKERY: kitchen/KOT (production workflow)");
 check(b.tables === false && b.floors === false, "BAKERY: no tables/floors");
 check(b.menu === true && b.barcode === true, "BAKERY: menu naming + barcode");
 
@@ -82,6 +84,32 @@ const validateBT = (v) => businessSchema.validate({ businessType: v, name: "Xyz 
 check(!validateBT("OTHER"), "onboarding accepts OTHER (retail umbrella)");
 check(!validateBT("BAKERY"), "onboarding accepts BAKERY");
 check(!!validateBT("HOTEL"), "onboarding still rejects legacy HOTEL");
+
+console.log("\n─── 10. Visible/selectable staff roles per business type (spec §1/§3) ───");
+// ONE authoritative mapping: getVisibleStaffRoles. staffDiscountRoles delegates
+// to it — the two must never diverge.
+const restaurantRoles = getVisibleStaffRoles("RESTAURANT");
+check(restaurantRoles.includes("MANAGER") && restaurantRoles.includes("CASHIER"), "RESTAURANT: Manager + Cashier visible");
+check(restaurantRoles.includes("KITCHEN"), "RESTAURANT: Kitchen Staff visible (kitchen capability)");
+check(restaurantRoles.includes("WAITER"), "RESTAURANT: Service Staff visible (service workflow)");
+for (const t of ["SUPERMARKET", "GROCERY", "CLOTHING", "ELECTRONICS"]) {
+  const roles = getVisibleStaffRoles(t);
+  check(roles.includes("MANAGER") && roles.includes("CASHIER"), `${t}: Manager + Cashier visible`);
+  check(!roles.includes("KITCHEN"), `${t}: Kitchen Staff NOT visible/selectable`);
+}
+check(getVisibleStaffRoles("BAKERY").includes("KITCHEN"), "BAKERY: Kitchen Staff visible (kitchen=true, production workflow)");
+check(getVisibleStaffRoles("FOOD_TRUCK").includes("KITCHEN") && !getVisibleStaffRoles("FOOD_TRUCK").includes("WAITER"), "FOOD_TRUCK: kitchen visible, Service Staff NOT (no tables)");
+check(getVisibleStaffRoles("CLOUD_KITCHEN").includes("KITCHEN") && !getVisibleStaffRoles("CLOUD_KITCHEN").includes("WAITER"), "CLOUD_KITCHEN: kitchen visible, Service Staff NOT");
+check(getVisibleStaffRoles("UNKNOWN_TYPE").length === 2, "unknown type → Manager + Cashier only (retail default)");
+const sdr = staffDiscountRoles("SUPERMARKET");
+check(JSON.stringify(sdr) === JSON.stringify(getVisibleStaffRoles("SUPERMARKET")), "staffDiscountRoles shares ONE list with getVisibleStaffRoles");
+
+console.log("\n─── 11. Staff-create capability enforcement (source invariants, spec §6) ───");
+const userCtrlSrc = require("fs").readFileSync(require("path").join(__dirname, "../controllers/user.controller.js"), "utf8");
+check(userCtrlSrc.includes("getVisibleStaffRoles") && userCtrlSrc.includes("resolveVisibleStaffRoles"), "user controller resolves capability roles server-side");
+check(userCtrlSrc.includes("is not available for this business type"), "unsupported role submission rejected with a clear error");
+check(userCtrlSrc.includes("prisma.restaurant.findUnique") && userCtrlSrc.includes("businessType: true"), "businessType resolved from the platform Restaurant row (never the client)");
+check(userCtrlSrc.includes("TENANT_STAFF_ROLES.includes(role)"), "global RBAC tenant-staff enum validation unchanged");
 
 console.log(`\nRESULTS: PASSED ${passed}  FAILED ${failed}`);
 process.exit(failed ? 1 : 0);

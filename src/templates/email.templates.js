@@ -619,6 +619,11 @@ const templates = {
   },
 
   // Additional existing events (kept on the shared layout) -----------------------
+  // APPLICATION_APPROVED — login info is rendered ONLY from real data: when a
+  // real temporary credential exists (provisioning generated one) it renders in
+  // the credentials box; otherwise the applicant signs in with the password they
+  // created at registration (never a fabricated password). loginUrl may be null
+  // (production without APP_FRONTEND_URL) — rows/CTA are then omitted entirely.
   APPLICATION_APPROVED: (d) => {
     const brand = brandFromData(d);
     return {
@@ -627,25 +632,48 @@ const templates = {
         data: d,
         title: "Your application has been approved",
         greeting: greetFor(d.applicantName),
-        bodyHtml: p(`Great news! Your application has been <strong style="color:${brand.primary};">APPROVED</strong> and your restaurant workspace is now active.`),
+        bodyHtml: p(`Great news! Your application has been <strong style="color:${brand.primary};">APPROVED</strong> and your restaurant workspace is now active.`) +
+          (safe(d.temporaryPassword)
+            ? p("Use the login information below to sign in for the first time. You will be asked to set a new password immediately after logging in.")
+            : p(`Sign in with your registered email${safe(d.loginEmail) ? ` <strong>${escapeHtml(d.loginEmail)}</strong>` : ""} and the password you created during registration.`)),
         infoRows: [
           { label: "Restaurant", value: d.restaurantName, strong: true },
           { label: "Application ID", value: d.applicationRef },
           { label: "Approved On", value: d.approvedAt },
           { label: "Plan", value: d.planName },
+          { label: "Login", value: d.loginEmail },
+          { label: "Login URL", value: d.loginUrl },
         ],
+        credentialsBox: safe(d.temporaryPassword)
+          ? [
+              { label: "Login (Email)", value: d.loginEmail },
+              { label: "TEMPORARY Password", value: d.temporaryPassword },
+              { label: "Login URL", value: d.loginUrl },
+            ]
+          : null,
         cta: safe(d.loginUrl) ? { label: "Login to Nirka POS", url: d.loginUrl } : null,
+        alert: safe(d.temporaryPassword)
+          ? { type: "warning", message: "For your security, change your temporary password immediately after signing in. Never share this email with anyone." }
+          : { type: "info", message: "If you have forgotten your password, use the “Forgot password” option on the login page." },
       }),
       text: textLayout({
         data: d,
         title: "Your application has been approved",
         greeting: greetFor(d.applicantName),
-        lines: ["Great news! Your application has been APPROVED and your restaurant workspace is now active."],
+        lines: [
+          "Great news! Your application has been APPROVED and your restaurant workspace is now active.",
+          safe(d.temporaryPassword)
+            ? "Use the temporary password below to sign in for the first time — change it immediately after logging in."
+            : `Sign in with your registered email${safe(d.loginEmail) ? ` ${d.loginEmail}` : ""} and the password you created during registration.`,
+        ],
         infoRows: [
           { label: "Restaurant", value: d.restaurantName },
           { label: "Application ID", value: d.applicationRef },
           { label: "Approved On", value: d.approvedAt },
           { label: "Plan", value: d.planName },
+          { label: "Login", value: d.loginEmail },
+          { label: "Login URL", value: d.loginUrl },
+          ...(safe(d.temporaryPassword) ? [{ label: "TEMPORARY Password", value: d.temporaryPassword }] : []),
         ],
         cta: safe(d.loginUrl) ? { label: "Login to Nirka POS", url: d.loginUrl } : null,
       }),

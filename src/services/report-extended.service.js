@@ -204,6 +204,38 @@ const getDiscountReport = async (restaurantId, from, to, db) => {
     discountByType[type].amount += Number(b.discount || 0);
   });
 
+  // ── Discounts & Promotions breakdown (OrderDiscount history) ──
+  // Real applied-discount records, grouped by the promotion type that was
+  // active when the discount was applied. Historical snapshot — never
+  // recalculated from the current promotion definitions.
+  const discountedOrderIds = discountedBills.map((b) => b.orderId);
+  const promotionBreakdown = {
+    promotion: 0, staff: 0, promoCode: 0, manual: 0,
+  };
+  const promotionCounts = { promotion: 0, staff: 0, promoCode: 0, manual: 0 };
+  if (discountedOrderIds.length > 0) {
+    let orderDiscounts = [];
+    try {
+      orderDiscounts = await prisma.orderDiscount.findMany({
+        where: { orderId: { in: discountedOrderIds } },
+        select: { discountType: true, isManual: true, discountAmount: true },
+      });
+    } catch (err) {
+      // Pre-migration tenant schema: the OrderDiscount table does not exist
+      // yet — the base discount report still works, only the breakdown is empty.
+      console.error("[Report] orderDiscount breakdown unavailable:", err.message);
+    }
+    for (const od of orderDiscounts) {
+      let bucket;
+      if (od.isManual) bucket = "manual";
+      else if (od.discountType === "STAFF") bucket = "staff";
+      else if (od.discountType === "PROMO_CODE") bucket = "promoCode";
+      else bucket = "promotion"; // PERCENTAGE / FIXED_AMOUNT promotions
+      promotionBreakdown[bucket] += Number(od.discountAmount || 0);
+      promotionCounts[bucket] += 1;
+    }
+  }
+
   return {
     summary: {
       totalDiscountedOrders: discountedBills.length,
@@ -215,6 +247,8 @@ const getDiscountReport = async (restaurantId, from, to, db) => {
       salesAfterDiscount: totalSalesAfterDiscount,
     },
     discountByType,
+    promotionBreakdown,
+    promotionCounts,
     bills: discountedBills,
   };
 };

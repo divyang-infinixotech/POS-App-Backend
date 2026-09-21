@@ -56,17 +56,32 @@ const collectPayment = async (req, res) => {
       return errorResponse(res, "At least one payment method is required", 400);
     }
 
+    // Discounts & Promotions stacking guard (§34): when the DiscountEngine has
+    // applied promotion/staff/promo-code discounts (OrderDiscount rows), the
+    // persisted engine-computed total is authoritative — the legacy cashier
+    // discount fields must never overwrite or double-count them.
+    const appliedDiscountCount = await prisma.orderDiscount.count({
+      where: { orderId: order.id },
+    });
+    const hasEngineDiscounts = appliedDiscountCount > 0;
+
     // Discount resolution — single source of truth (shared util, clamped to subtotal)
-    const effectiveDiscountType = discountType !== undefined
-      ? discountType
-      : (order.discountType || null);
-    const effectiveDiscountValue = discountValue !== undefined
-      ? discountValue
-      : (order.discountValue || 0);
-    const discountAmount = effectiveDiscountType
-      ? calculateDiscountAmount(effectiveDiscountType, effectiveDiscountValue, order.subtotal)
-      // Legacy flat `discount` — clamp so a bill can never go negative
-      : Math.min(Math.max(0, Number(discount) || 0), order.subtotal);
+    const effectiveDiscountType = hasEngineDiscounts
+      ? null
+      : discountType !== undefined
+        ? discountType
+        : (order.discountType || null);
+    const effectiveDiscountValue = hasEngineDiscounts
+      ? 0
+      : discountValue !== undefined
+        ? discountValue
+        : (order.discountValue || 0);
+    const discountAmount = hasEngineDiscounts
+      ? Math.min(Math.max(0, Number(order.discount) || 0), order.subtotal)
+      : effectiveDiscountType
+        ? calculateDiscountAmount(effectiveDiscountType, effectiveDiscountValue, order.subtotal)
+        // Legacy flat `discount` — clamp so a bill can never go negative
+        : Math.min(Math.max(0, Number(discount) || 0), order.subtotal);
 
     // Calculate totals — payable can never go below zero
     const subtotal = order.subtotal;
@@ -196,6 +211,8 @@ const collectPayment = async (req, res) => {
             completedAt: new Date(),
             // Keep the order discount in sync with the final bill so order
             // details, history and receipts all agree with the persisted bill.
+            // With engine-applied discounts the OrderDiscount snapshot rows are
+            // the history of record — legacy fields are cleared, never overwritten.
             discount: discountAmount,
             discountType: effectiveDiscountType,
             discountValue: effectiveDiscountType ? Number(effectiveDiscountValue) : 0,

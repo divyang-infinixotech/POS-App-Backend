@@ -24,6 +24,8 @@ const {
   verifySmtp,
   sendTestEmail,
   setGeneralEmailEnabled,
+  saveEmailProvider,
+  getActiveEmailProvider,
 } = require("../config/email.config");
 const {
   resendEmailLog,
@@ -71,13 +73,47 @@ const updateEmailSettings = async (req, res) => {
 const verifyEmailSettings = async (req, res) => {
   try {
     const result = await verifySmtp();
-    // Message reflects the ACTIVE transport (Graph when enabled) — the
-    // frontend stays transport-agnostic.
+    // Message reflects the ACTIVE transport (backend decides; the frontend
+    // stays transport-agnostic).
     const { activeTransportName } = require("../services/email/transport");
-    const label = activeTransportName() === "microsoft-graph" ? "Email transport" : "SMTP";
-    return successResponse(res, result, result.ok ? label + " connection verified" : label + " verification failed");
+    const active = await activeTransportName();
+    const label = active === "microsoft-graph" ? "Microsoft Graph" : "SMTP";
+    return successResponse(res, { ...result, provider: active }, result.ok ? label + " connection verified" : label + " verification failed");
   } catch (error) {
     return errorResponse(res, error.message);
+  }
+};
+
+// ─── Active email provider selection (SUPER_ADMIN only) ───
+// GET returns the persisted selection; PUT validates + persists it. Allowed
+// values: GRAPH | SMTP (case-insensitive). Invalid values fail with 400 —
+// never coerced. Secrets are never accepted or returned here.
+const getEmailProvider = async (req, res) => {
+  try {
+    return successResponse(res, { emailProvider: await getActiveEmailProvider() }, "Active email provider fetched");
+  } catch (error) {
+    return errorResponse(res, error.message);
+  }
+};
+
+const updateEmailProvider = async (req, res) => {
+  try {
+    const requested = req.body && req.body.provider;
+    const previous = await getActiveEmailProvider();
+    const saved = await saveEmailProvider(requested);
+    try {
+      await createAuditLog({
+        userId: req.user.id,
+        module: "SETTINGS",
+        action: "UPDATE",
+        description: `Active email provider changed from ${previous} to ${saved} by Super Admin`,
+        ipAddress: req.ip,
+        userAgent: req.headers["user-agent"],
+      }, prisma);
+    } catch (_) { /* non-critical */ }
+    return successResponse(res, await getEmailStatus(), `Active email provider set to ${saved}.`);
+  } catch (error) {
+    return errorResponse(res, error.message, error.statusCode || 400);
   }
 };
 
@@ -96,11 +132,11 @@ const sendTestEmailHandler = async (req, res) => {
         userAgent: req.headers["user-agent"],
       }, prisma);
     } catch (_) { /* non-critical */ }
-    // Phase 5: 202 means the transport ACCEPTED the message — say "accepted",
-    // never "delivered".
+    // 202 means the transport ACCEPTED the message — say "accepted", never
+    // "delivered". The toast identifies the provider actually used.
     const acceptedMsg = result.provider === "microsoft-graph"
       ? "Test email accepted by Microsoft Graph."
-      : "Test email accepted by the mail transport.";
+      : "Test email sent through SMTP.";
     return successResponse(res, result, acceptedMsg);
   } catch (error) {
     return errorResponse(res, error.message);
@@ -1059,6 +1095,6 @@ module.exports = {
   // Manual payment flow
   getManualApplications, getManualApplication, markManualPaymentReceived, approveManualApplication: approveManualApplicationHandler, rejectManualApplication: rejectManualApplicationHandler,
   // Email settings + delivery log (SUPER_ADMIN only)
-  getEmailSettings, updateEmailSettings, verifyEmailSettings, sendTestEmailHandler,
+  getEmailSettings, updateEmailSettings, verifyEmailSettings, sendTestEmailHandler, getEmailProvider, updateEmailProvider,
   getEmailLogs, resendEmailHandler, retryEmailQueueHandler,
 };

@@ -11,36 +11,72 @@
  *    Development sets http://localhost:3000; production MUST set its real
  *    frontend origin (e.g. https://app.yourdomain.com).
  *  - Trailing slashes are stripped so callers append "/login" safely.
- *  - The localhost fallback is a DEVELOPMENT convenience only: a warning is
- *    logged once per process when the app is not in development mode, so a
- *    production misconfiguration is visible in the logs instead of silently
- *    mailing localhost links.
+ *  - DEVELOPMENT-ONLY fallback: when APP_FRONTEND_URL is unset and NODE_ENV is
+ *    "development", the legacy http://localhost:3000 convenience applies.
+ *  - PRODUCTION SAFETY: in any non-development environment a missing
+ *    APP_FRONTEND_URL NEVER produces a localhost URL. getFrontendUrl() throws
+ *    a configuration error (logged, never silent) and getSafeLoginUrl()
+ *    returns null so callers can fail the email URL generation instead of
+ *    mailing an incorrect localhost link.
  */
+
+const DEV_FALLBACK = "http://localhost:3000";
+const LOCALHOST_RE = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?/i;
 
 let warned = false;
 
+function nodeEnv() {
+  return String(process.env.NODE_ENV || "development").toLowerCase();
+}
+
+function isDevelopment() {
+  return nodeEnv() === "development";
+}
+
+/** Configured frontend origin without a trailing slash (throws in production when unset). */
 function getFrontendUrl() {
   const raw = String(process.env.APP_FRONTEND_URL || "").trim().replace(/\/+$/, "");
   if (raw) return raw;
 
-  // Fallback — development convenience. Warn (once) outside development so a
-  // missing production env var is never a silent localhost link.
-  const nodeEnv = String(process.env.NODE_ENV || "development").toLowerCase();
-  if (!warned && nodeEnv !== "development" && nodeEnv !== "test") {
-    warned = true;
-    // console (not the request logger) — this fires during module use, and the
-    // message deliberately contains no secrets or request data.
-    console.warn(
-      "[FrontendUrl] APP_FRONTEND_URL is not set — falling back to http://localhost:3000. " +
-        "Email links will point at localhost. Set APP_FRONTEND_URL in production."
-    );
-  }
-  return "http://localhost:3000";
+  // Localhost convenience exists ONLY in development (and tests never mail).
+  if (isDevelopment()) return DEV_FALLBACK;
+
+  // Production misconfiguration — loud, explicit, and never a silent localhost.
+  const message =
+    "[FrontendUrl] APP_FRONTEND_URL is not set — refusing to generate a frontend URL. " +
+    "Email links would otherwise point at localhost. Set APP_FRONTEND_URL to the " +
+    "production frontend origin (e.g. https://app.yourdomain.com).";
+  console.error(message);
+  const err = new Error("APP_FRONTEND_URL is not configured — cannot generate a frontend URL for email links.");
+  err.statusCode = 503;
+  throw err;
 }
 
-/** Convenience: the login URL used by every email CTA. */
+/**
+ * Production-safe login URL. Returns "<APP_FRONTEND_URL>/login", or null when
+ * the URL cannot be generated safely (production without APP_FRONTEND_URL).
+ * Callers must handle null explicitly — never substitute a fabricated URL.
+ */
+function getSafeLoginUrl() {
+  try {
+    return getFrontendUrl() + "/login";
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Convenience: the login URL used by every email CTA (legacy shape). */
 function getLoginUrl() {
   return getFrontendUrl() + "/login";
 }
 
-module.exports = { getFrontendUrl, getLoginUrl };
+/**
+ * True when the given URL points at localhost. Used by email senders as a
+ * production tripwire: a localhost login URL must never reach a production
+ * recipient, even if some future caller misconfigures the base URL.
+ */
+function isLocalhostUrl(url) {
+  return LOCALHOST_RE.test(String(url || ""));
+}
+
+module.exports = { getFrontendUrl, getLoginUrl, getSafeLoginUrl, isLocalhostUrl, isDevelopment };

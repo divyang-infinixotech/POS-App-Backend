@@ -22,6 +22,89 @@ const { isValidEmail, normalizeEmail } = require("../utils/email");
 const SETTING_KEY = "email_smtp_config";
 const CACHE_TTL_MS = 5 * 1000;
 
+// ── Active email provider (Part: provider selection) ──
+// Persisted in the SAME SystemSetting mechanism as the SMTP config, under its
+// own key. Allowed values are strictly GRAPH | SMTP — anything else fails
+// validation (never silently coerced). The env fallback keeps legacy
+// deployments working: EMAIL_PROVIDER first, then the historical
+// MICROSOFT_GRAPH_ENABLED flag, then SMTP.
+const PROVIDER_SETTING_KEY = "email_provider";
+const EMAIL_PROVIDERS = { GRAPH: "GRAPH", SMTP: "SMTP" };
+const PROVIDER_CACHE_TTL_MS = 5 * 1000;
+
+let providerCache = { ts: 0, value: null };
+
+/** Normalize a provider value. Returns null for anything not GRAPH|SMTP. */
+function normalizeProvider(raw) {
+  const v = String(raw || "").trim().toUpperCase();
+  if (v === "GRAPH" || v === "MICROSOFT_GRAPH" || v === "MICROSOFT-GRAPH") return EMAIL_PROVIDERS.GRAPH;
+  if (v === "SMTP" || v === "GMAIL") return EMAIL_PROVIDERS.SMTP;
+  return null;
+}
+
+/** Resolve the provider from the environment (legacy/env-only deployments). */
+function providerFromEnv() {
+  const explicit = normalizeProvider(process.env.EMAIL_PROVIDER);
+  if (explicit) return explicit;
+  // Legacy default: the historical MICROSOFT_GRAPH_ENABLED feature flag.
+  const graphFlag = String(process.env.MICROSOFT_GRAPH_ENABLED || "").toLowerCase() === "true";
+  return graphFlag ? EMAIL_PROVIDERS.GRAPH : EMAIL_PROVIDERS.SMTP;
+}
+
+/**
+ * Active email provider: GRAPH | SMTP.
+ * Order: persisted Super Admin setting → EMAIL_PROVIDER env →
+ * MICROSOFT_GRAPH_ENABLED flag → SMTP. Invalid stored values are ignored
+ * (fail-safe to the env-derived default) and logged.
+ */
+async function getActiveEmailProvider() {
+  const now = Date.now();
+  if (providerCache.value && now - providerCache.ts < PROVIDER_CACHE_TTL_MS) return providerCache.value;
+
+  let stored = null;
+  try {
+    const row = await prisma.systemSetting.findUnique({ where: { key: PROVIDER_SETTING_KEY } });
+    if (row && row.value != null) {
+      const parsed = typeof row.value === "string" ? JSON.parse(row.value) : row.value;
+      stored = normalizeProvider(parsed && typeof parsed === "object" ? parsed.provider : parsed);
+      if (!stored && parsed) {
+        console.warn("[EmailConfig] Stored email provider value is invalid — falling back to environment config.");
+      }
+    }
+  } catch (_) {
+    stored = null; // DB unavailable — env fallback keeps email deliverable
+  }
+
+  providerCache = { ts: now, value: stored || providerFromEnv() };
+  return providerCache.value;
+}
+
+/**
+ * Persist the active provider. Only GRAPH | SMTP are accepted — an invalid
+ * value throws (400-grade) instead of being coerced or ignored.
+ */
+async function saveEmailProvider(provider) {
+  const normalized = normalizeProvider(provider);
+  if (!normalized) {
+    const err = new Error("Invalid email provider. Allowed values: GRAPH, SMTP.");
+    err.statusCode = 400;
+    throw err;
+  }
+  const value = { provider: normalized, updatedAt: new Date().toISOString() };
+  await prisma.systemSetting.upsert({
+    where: { key: PROVIDER_SETTING_KEY },
+    update: { value },
+    create: { key: PROVIDER_SETTING_KEY, value },
+  });
+  providerCache = { ts: 0, value: null }; // invalidate
+  return normalized;
+}
+
+/** True when the Microsoft Graph transport is the ACTIVE provider. */
+async function isGraphActive() {
+  return (await getActiveEmailProvider()) === EMAIL_PROVIDERS.GRAPH;
+}
+
 let cache = { ts: 0, value: null };
 
 /** env-var fallback (used when no Super Admin config is saved). */
@@ -131,6 +214,7 @@ async function saveEmailConfig(data) {
 /** Public, frontend-safe view — the password is ALWAYS masked, never sent. */
 async function getEmailStatus() {
   const cfg = await getEmailConfig();
+  const activeProvider = await getActiveEmailProvider();
   const problems = [];
   if (!cfg.host) problems.push("SMTP host is not set");
   if (!cfg.fromEmail) problems.push("From email is not set");
@@ -149,6 +233,7 @@ async function getEmailStatus() {
   else if (!graphConfigured) graphStatus = "INCOMPLETE";
   else graphStatus = "ENABLED";
 
+  const smtpProblems = problems.slice();
   return {
     enabled: cfg.enabled,
     host: cfg.host,
@@ -163,14 +248,28 @@ async function getEmailStatus() {
     passwordConfigured: !!cfg.password,
     status: problems.length === 0 ? "CONFIGURED" : problems.length >= 3 ? "NOT_CONFIGURED" : "PARTIAL",
     problems,
-    // Graph block (Phase 3) — masked, safe for the frontend:
-    provider: graphStatus === "DISABLED" ? "smtp" : "microsoft-graph",
+    // ── Active provider (Super Admin selection; GRAPH | SMTP) ──
+    // "provider" keeps its historical meaning (the transport the UI badge was
+    // built on) — Graph mode shows microsoft-graph, otherwise smtp.
+    provider: activeProvider === EMAIL_PROVIDERS.GRAPH ? "microsoft-graph" : "smtp",
+    // Explicit provider selection for the settings UI (never inferred client-side).
+    emailProvider: activeProvider, // GRAPH | SMTP
     graph: {
       status: graphStatus, // ENABLED | INCOMPLETE | DISABLED
       tenantIdConfigured: !!g.tenantId,
       clientIdConfigured: !!g.clientId,
       clientSecretConfigured: !!g.clientSecret, // NEVER the value
       senderEmail: g.senderEmail || "",
+    },
+    smtp: {
+      host: cfg.host || "",
+      port: cfg.port,
+      user: cfg.user || "",
+      fromEmail: cfg.fromEmail || "",
+      secure: !!cfg.secure,
+      passwordConfigured: !!cfg.password, // NEVER the value
+      status: smtpProblems.length === 0 ? "CONFIGURED" : smtpProblems.length >= 3 ? "NOT_CONFIGURED" : "PARTIAL",
+      problems: smtpProblems,
     },
   };
 }
@@ -192,12 +291,11 @@ async function isEmailReady() {
   return !!(cfg.enabled && cfg.host && cfg.fromEmail && cfg.user && cfg.password);
 }
 
-/** Verify SMTP connectivity by verifying the transport (never sends mail). */
+/** Verify the ACTIVE provider's connectivity (never sends mail). */
 async function verifySmtp() {
-  // Microsoft Graph mode: verify configuration + token acquisition instead.
-  // (Name kept for API compatibility with existing controllers/frontend.)
+  // Name kept for API compatibility with existing controllers/frontend.
   const graph = require("../services/email/microsoftGraph.client");
-  if (graph.getGraphConfig().enabled) {
+  if (await isGraphActive()) {
     return graph.verifyGraphConnection();
   }
   const cfg = await getEmailConfig();
@@ -227,10 +325,12 @@ async function sendTestEmail(toEmail) {
   if (!isValidEmail(to)) return { ok: false, error: "Please enter a valid test recipient email." };
   const cfg = await getEmailConfig();
   if (!cfg.enabled) return { ok: false, error: "Email notifications are disabled." };
-  // Graph mode needs no SMTP host — only its own configuration (checked inside
-  // the transport); SMTP mode keeps the host/fromEmail precondition.
-  const graphEnabled = require("../services/email/microsoftGraph.client").getGraphConfig().enabled;
-  if (!graphEnabled && (!cfg.host || !cfg.fromEmail)) {
+  // Provider-aware preconditions: Graph mode needs only its own configuration
+  // (checked inside the transport); SMTP mode keeps the host/fromEmail
+  // precondition. The test ALWAYS goes through the ACTIVE provider — never a
+  // silent fallback to the other one.
+  const graphActive = await isGraphActive();
+  if (!graphActive && (!cfg.host || !cfg.fromEmail)) {
     return { ok: false, error: "SMTP host and from email are required. Save the SMTP settings first." };
   }
   // Rendered through the shared SMTP_TEST template — same visual identity as
@@ -238,12 +338,12 @@ async function sendTestEmail(toEmail) {
   const { renderTemplate } = require("../templates/email.templates");
   const rendered = renderTemplate("SMTP_TEST", {
     testedAt: new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour12: true }),
-    fromEmail: cfg.fromEmail,
+    fromEmail: graphActive ? require("../services/email/microsoftGraph.client").getGraphConfig().senderEmail : cfg.fromEmail,
     brandName: cfg.fromName || "Nirka POS",
     supportEmail: cfg.replyTo || cfg.fromEmail || "",
   });
   try {
-    // Deliver through the ACTIVE transport (Graph when enabled, else SMTP).
+    // Deliver through the ACTIVE transport ONLY (Graph or SMTP as selected).
     // Lazy require avoids a load-time cycle (transport reads this config).
     const transport = require("../services/email/transport");
     const result = await transport.deliverEmail({
@@ -253,7 +353,7 @@ async function sendTestEmail(toEmail) {
       payloadText: rendered.text,
     });
     if (result.ok) return { ok: true, messageId: result.messageId, provider: result.provider };
-    return { ok: false, error: String(result.error || "Test email failed").slice(0, 300) };
+    return { ok: false, error: String(result.error || "Test email failed").slice(0, 300), provider: result.provider };
   } catch (e) {
     return { ok: false, error: String(e.message || "Test email failed").slice(0, 300) };
   }
@@ -261,6 +361,12 @@ async function sendTestEmail(toEmail) {
 
 module.exports = {
   SETTING_KEY,
+  PROVIDER_SETTING_KEY,
+  EMAIL_PROVIDERS,
+  normalizeProvider,
+  getActiveEmailProvider,
+  saveEmailProvider,
+  isGraphActive,
   getEmailConfig,
   getEmailStatus,
   saveEmailConfig,

@@ -41,7 +41,7 @@ const {
   verifyPaymentSignature,
 } = require("./razorpay.service");
 const { normalizeEmail } = require("../utils/email");
-const { getFrontendUrl, getLoginUrl } = require("../utils/frontendUrl");
+const { getFrontendUrl, getLoginUrl, getSafeLoginUrl } = require("../utils/frontendUrl");
 const { resolveBusinessMode, normalizeBusinessType, assertPlanCompatibleWithBusinessType } = require("../utils/businessMode");
 const {
   BUSINESS_TYPES,
@@ -1089,7 +1089,13 @@ async function provisionAndActivate(restaurantId, actorId, meta) {
   // Final approval validation (spec §17): the application's stored businessType
   // must be compatible with the plan's businessMode before a tenant/subscription
   // is created. A mismatch is a configuration error, not a soft warning.
-  assertPlanCompatibleWithBusinessType(restaurant.businessType, plan);
+  // The plan activated here IS the application's selected plan (loaded from its
+  // own subscription row) — the same-plan exemption keeps in-flight
+  // applications activatable when the mode mapping changes between selection
+  // and approval. New selections are gated strictly in selectPlan.
+  assertPlanCompatibleWithBusinessType(restaurant.businessType, plan, null, {
+    isCurrentPlan: subscription.planId === plan.id,
+  });
 
   // Phase 1: mark provisioning (DDL below cannot run inside the DB transaction)
   await prisma.restaurant.update({
@@ -1282,7 +1288,23 @@ async function applyPlanFeaturesToTenantSetting(tenantDb, restaurantId, features
       enableReports: true,
       enableBilling: true,
     },
+    // BASIC_POS food businesses (café/bakery/bar/food-truck/cloud-kitchen) run
+    // in PRODUCTION mode by default (§2): Order → KOT → Active Orders → Ready
+    // → Bill → Payment. enableCounterSale is the "Enable Basic POS Quick
+    // Billing" toggle (OFF = production). Tables/floors stay OFF — no dine-in.
     BASIC_POS: {
+      enableCounterSale: false,
+      enableKitchen: true,
+      enableFloorManagement: false,
+      enableActiveOrders: true,
+      enableMenu: true,
+      enableReports: true,
+      enableBilling: true,
+      enablePosOrdering: true,
+    },
+    // QUICK_BILLING (retail): same counter preset as BASIC_POS — retail
+    // capabilities (no kitchen/tables) come from the businessType layer.
+    QUICK_BILLING: {
       enableCounterSale: true,
       enableKitchen: false,
       enableFloorManagement: false,
@@ -1298,7 +1320,7 @@ async function applyPlanFeaturesToTenantSetting(tenantDb, restaurantId, features
       updateData[key] = PRESETS[mode][key];
     });
   }
-  updateData.businessMode = mode === "BASIC_POS" ? "counter" : "restaurant";
+  updateData.businessMode = mode === "RESTAURANT" ? "restaurant" : "counter";
   if (Object.keys(updateData).length > 0) {
     await tenantDb.restaurantSetting.updateMany({ where: { restaurantId: Number(restaurantId) }, data: updateData });
   }
@@ -1807,12 +1829,20 @@ async function approveManualApplication(restaurantId, saUserId, meta) {
   });
 
   // ── Approval email to the applicant (queued, non-fatal, idempotent) ──
+  // The self-serve owner created their own password at registration — no
+  // plaintext temporary credential exists here, so none is fabricated. The
+  // login URL is generated ONLY when APP_FRONTEND_URL is configured; a
+  // production misconfiguration skips the email loudly instead of mailing a
+  // localhost link (the event can be re-triggered after fixing the env).
   try {
     const owner = await prisma.user.findFirst({
       where: { restaurantId: restaurant.id, role: "ADMIN", deletedAt: null },
       select: { email: true, name: true },
     });
-    if (owner && owner.email) {
+    const approvalLoginUrl = getSafeLoginUrl();
+    if (!approvalLoginUrl) {
+      console.error("[Onboarding] Approval email NOT queued: APP_FRONTEND_URL is not configured (refusing to mail a localhost link).");
+    } else if (owner && owner.email) {
       sendApplicationApprovedEmail({
         to: owner.email,
         applicantName: restaurant.ownerName || owner.name,
@@ -1820,7 +1850,8 @@ async function approveManualApplication(restaurantId, saUserId, meta) {
         applicationRef: `APP-${String(restaurant.id).padStart(4, "0")}`,
         approvedAt: new Date().toUTCString(),
         planName: (restaurant.subscription && restaurant.subscription.plan) || "Selected plan",
-        loginUrl: getLoginUrl(),
+        loginUrl: approvalLoginUrl,
+        loginEmail: owner.email,
       });
     }
   } catch (emailErr) {
@@ -2264,12 +2295,18 @@ async function approveApplication(restaurantId, saUserId, meta) {
   });
 
   // ── Approval email to the applicant (queued, non-fatal, idempotent) ──
+  // Same policy as the manual-approval path: real login email only, no
+  // fabricated credential (self-serve owners set their own password), and no
+  // email at all when the production frontend URL is missing.
   try {
     const owner = await prisma.user.findFirst({
       where: { restaurantId: restaurant.id, role: "ADMIN", deletedAt: null },
       select: { email: true, name: true },
     });
-    if (owner && owner.email) {
+    const approvalLoginUrl = getSafeLoginUrl();
+    if (!approvalLoginUrl) {
+      console.error("[Onboarding] Approval email NOT queued: APP_FRONTEND_URL is not configured (refusing to mail a localhost link).");
+    } else if (owner && owner.email) {
       const plan = await prisma.plan.findUnique({ where: { id: restaurant.subscription.planId }, select: { name: true } }).catch(() => null);
       sendApplicationApprovedEmail({
         to: owner.email,
@@ -2278,7 +2315,8 @@ async function approveApplication(restaurantId, saUserId, meta) {
         applicationRef: `APP-${String(restaurant.id).padStart(4, "0")}`,
         approvedAt: new Date().toUTCString(),
         planName: (plan && plan.name) || restaurant.subscription.plan,
-        loginUrl: getLoginUrl(),
+        loginUrl: approvalLoginUrl,
+        loginEmail: owner.email,
       });
     }
   } catch (emailErr) {

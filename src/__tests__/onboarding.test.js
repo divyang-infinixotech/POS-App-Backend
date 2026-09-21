@@ -140,10 +140,11 @@ section("3. Config integrity (business types / document types / policy versions)
 
 // HOTEL is no longer offered for NEW onboarding (removed from selectors);
 // the enum value stays in Prisma so historical records remain readable.
-// Retail verticals SUPERMARKET/GROCERY/CLOTHING were added additively (2026-09).
-check(config.BUSINESS_TYPES.length === 11, `Business types offered (${config.BUSINESS_TYPES.length})`);
+// Retail verticals were added additively (2026-09: SUPERMARKET/GROCERY/CLOTHING,
+// then ELECTRONICS/FURNITURE/HARDWARE/COSMETICS/STATIONERY/JEWELLERY).
+check(config.BUSINESS_TYPES.length === 17, `Business types offered (${config.BUSINESS_TYPES.length})`);
 const offered = config.BUSINESS_TYPES.map((b) => b.value);
-for (const want of ["RESTAURANT", "BAKERY", "CAFE", "BAR", "FOOD_TRUCK", "CLOUD_KITCHEN", "FOOD_COURT", "OTHER", "SUPERMARKET", "GROCERY", "CLOTHING"]) {
+for (const want of ["RESTAURANT", "BAKERY", "CAFE", "BAR", "FOOD_TRUCK", "CLOUD_KITCHEN", "FOOD_COURT", "OTHER", "SUPERMARKET", "GROCERY", "CLOTHING", "ELECTRONICS", "FURNITURE", "HARDWARE", "COSMETICS", "STATIONERY", "JEWELLERY"]) {
   check(offered.includes(want), `Business type offered: ${want}`);
 }
 check(!offered.includes("HOTEL"), "HOTEL no longer offered for new onboarding");
@@ -438,7 +439,7 @@ check(FEATURE_SETTINGS_MAP.kitchen.includes("enableKitchen"), "kitchen feature m
 check(FEATURE_SETTINGS_MAP.reports.includes("enableReports"), "reports feature maps to enableReports toggle");
 check(DEFAULT_FEATURES.every(f => PLAN_FEATURES[f]), "default features exist in the catalog");
 const featureMidSrc = fs2.readFileSync(path.join(process.cwd(), "src/middleware/feature.middleware.js"), "utf8");
-check(/features\.includes/.test(featureMidSrc), "requireFeature enforces plan features server-side (Part 11)");
+check(/(features|effectiveFeatures)\.includes/.test(featureMidSrc), "requireFeature enforces plan features server-side (Part 11)");
 check(/EXPIRED|CANCELLED|SUSPENDED/.test(featureMidSrc), "plan change/expiry blocks access immediately (Part 12)");
 
 sub("Email identity stays case-insensitive (Parts 1–3)");

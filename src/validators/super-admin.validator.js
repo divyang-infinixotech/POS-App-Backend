@@ -87,9 +87,9 @@ const createPlanSchema = Joi.object({
   code: Joi.string().min(2).max(50).required(),
   name: Joi.string().min(2).max(100).required(),
   description: Joi.string().allow(null, "").max(500).optional(),
-  // Business/plan mode is REQUIRED at creation (spec §11) — only the two
+  // Business/plan mode is REQUIRED at creation (spec §11) — only the three
   // supported modes are accepted.
-  businessMode: Joi.string().valid("RESTAURANT", "BASIC_POS").required(),
+  businessMode: Joi.string().valid("RESTAURANT", "BASIC_POS", "QUICK_BILLING").required(),
   monthlyPrice: Joi.number().min(0).allow(null).optional(),
   yearlyPrice: Joi.number().min(0).allow(null).optional(),
   billingCycle: Joi.string().valid("MONTHLY", "YEARLY", "ONCE").default("MONTHLY"),
@@ -115,7 +115,7 @@ const updatePlanSchema = Joi.object({
   description: Joi.string().allow(null, "").max(500).optional(),
   // Mode changes are allowed but guarded (service throws 409 requiring
   // confirmModeChange=true when subscriptions exist on the plan).
-  businessMode: Joi.string().valid("RESTAURANT", "BASIC_POS").optional(),
+  businessMode: Joi.string().valid("RESTAURANT", "BASIC_POS", "QUICK_BILLING").optional(),
   confirmModeChange: Joi.boolean().optional(),
   monthlyPrice: Joi.number().min(0).allow(null).optional(),
   yearlyPrice: Joi.number().min(0).allow(null).optional(),

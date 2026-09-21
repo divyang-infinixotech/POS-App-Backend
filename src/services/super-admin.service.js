@@ -11,7 +11,7 @@ const { resolveBusinessMode, normalizeBusinessType, assertPlanCompatibleWithBusi
 const { getBusinessCapabilities } = require("../utils/businessCapabilities");
 const { filterModulesForBusinessMode } = require("../config/subscription.config");
 const { sendUserCredentialsEmail } = require("./email.service");
-const { getLoginUrl } = require("../utils/frontendUrl");
+const { getSafeLoginUrl } = require("../utils/frontendUrl");
 
 function buildRestaurantWhere(opts) {
   var where = { deletedAt: null };
@@ -95,7 +95,28 @@ const BUSINESS_MODE_PRESETS = {
     enableBilling: true,
     // POS Ordering works in ALL modes — controlled by enablePosOrdering toggle
   },
+  // BASIC_POS food businesses (café/bakery/bar/food-truck/cloud-kitchen) run
+  // in PRODUCTION mode by default (§2): Order → KOT → Active Orders → Ready →
+  // Bill → Payment. Kitchen capability comes from the businessType layer, so
+  // the tenant ADMIN can still turn enableKitchen off if they don't prepare
+  // anything. enableCounterSale = the "Enable Basic POS Quick Billing" toggle
+  // (default OFF = production); tables/floors stay OFF for every BASIC_POS
+  // tenant — no dine-in workflow exists in this mode.
   BASIC_POS: {
+    enableCounterSale: false,
+    enableKitchen: true,
+    enableFloorManagement: false,
+    enableActiveOrders: true,
+    enableMenu: true,
+    enableReports: true,
+    enableBilling: true,
+    enablePosOrdering: true,
+  },
+  // QUICK_BILLING (retail): identical counter-billing preset to BASIC_POS —
+  // the tenant's businessType capabilities (businessCapabilities.js) already
+  // hide kitchen/tables UI for retail verticals, and drive the
+  // "Products & Stock" labeling. No restaurant ordering workflow.
+  QUICK_BILLING: {
     enableCounterSale: true,
     enableKitchen: false,
     enableFloorManagement: false,
@@ -125,8 +146,9 @@ async function applyPlanFeaturesToSettings(tx, restaurantId, features, businessM
       updateData[key] = preset[key];
     });
   }
-  // Business mode is also stored on RestaurantSetting for backward compatibility
-  updateData.businessMode = mode === "BASIC_POS" ? "counter" : "restaurant";
+  // Business mode is also stored on RestaurantSetting for backward compatibility.
+  // Both basic modes map to the 'counter' UI mode; only RESTAURANT maps to 'restaurant'.
+  updateData.businessMode = mode === "RESTAURANT" ? "restaurant" : "counter";
   if (Object.keys(updateData).length > 0) {
     await tx.restaurantSetting.updateMany({ where: { restaurantId: Number(restaurantId) }, data: updateData });
   }
@@ -465,15 +487,24 @@ function generateTemporaryPassword() {
  * queued and the email cron retries it).
  */
 async function queueAdminCredentialsEmail(data) {
+  // getLoginUrl() already includes the "/login" path — appending another one
+  // produced a broken ".../login/login" link in the credentials email.
+  // getSafeLoginUrl() returns null when production has no APP_FRONTEND_URL —
+  // the email is then NOT queued (a localhost link must never be mailed); the
+  // queue worker / a later resend picks it up once configuration is fixed.
+  const loginUrl = getSafeLoginUrl();
+  if (!loginUrl) {
+    console.error("[SA] Admin credentials email NOT queued: APP_FRONTEND_URL is not configured (refusing to mail a localhost link). Fix the environment and resend from Email Logs.");
+    return false;
+  }
   try {
-    const frontendUrl = getLoginUrl();
     await sendUserCredentialsEmail({
       to: data.adminEmail,
       adminName: data.adminName,
       restaurantName: data.restaurantName,
       loginEmail: data.adminEmail,
       temporaryPassword: data.temporaryPassword,
-      loginUrl: frontendUrl + "/login",
+      loginUrl: loginUrl,
       keySuffix: data.keySuffix,
     });
     return true;
@@ -763,7 +794,13 @@ var changeSubscriptionPlan = async function(restaurantId, data, userId, ipAddres
   // (spec §14) — an existing restaurant cannot switch into a plan whose mode
   // contradicts its business type.
   var currentRestaurant = await prisma.restaurant.findUnique({ where: { id: Number(restaurantId) }, select: { businessType: true } });
-  if (currentRestaurant) assertPlanCompatibleWithBusinessType(currentRestaurant.businessType, plan);
+  if (currentRestaurant) {
+    // The tenant's CURRENT plan is exempt — a legacy tenant keeps renewing its
+    // own plan even if a mapping change re-categorized its business type.
+    assertPlanCompatibleWithBusinessType(currentRestaurant.businessType, plan, null, {
+      isCurrentPlan: subscription.planId === plan.id,
+    });
+  }
 
   var billingCycle = data.billingCycle || plan.billingCycle || "MONTHLY";
   if (["MONTHLY", "YEARLY", "ONCE"].indexOf(billingCycle) === -1) badRequest("Invalid billing cycle");
@@ -1080,7 +1117,7 @@ var updatePlan = async function(id, data) {
   // businessMode is validated: only RESTAURANT / BASIC_POS are accepted.
   if (data.businessMode !== undefined) {
     var mode = String(data.businessMode || "").toUpperCase();
-    if (PLAN_MODES.indexOf(mode) === -1) throw new Error("Invalid business mode. Allowed values: RESTAURANT, BASIC_POS.");
+    if (PLAN_MODES.indexOf(mode) === -1) throw new Error("Invalid business mode. Allowed values: RESTAURANT, BASIC_POS, QUICK_BILLING.");
     if (mode !== (plan.businessMode || "RESTAURANT")) {
       // Changing a plan's mode re-categorizes every subscription using it.
       // Surface the dependency so the SA UI can confirm before applying.

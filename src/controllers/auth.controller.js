@@ -31,6 +31,44 @@ const login = async (req, res) => {
     let tenantDb = null;
     let resolvedRestaurantId = null;
 
+    // STAFF-ROLE IDENTITY FIX: the database contains legacy public-schema
+    // "shadow" staff rows (seeded pre-tenancy) alongside the canonical
+    // tenant-schema User rows. Preferring the public row authenticates the
+    // person with a JWT id that exists ONLY in the public schema — which the
+    // tenant auth middleware cannot resolve ("User not found" on every
+    // staff login) and which would mis-attribute discount recipients, order
+    // creators and audit actors. Staff-role identities must resolve to the
+    // tenant-schema row (the schema IS the tenant boundary), so when a
+    // MANAGER/CASHIER/KITCHEN/WAITER email exists in the public schema AND
+    // in the tenant schema of the restaurant the public row points at, the
+    // tenant row wins. Platform roles (SUPER_ADMIN/ADMIN) are unaffected.
+    if (
+      user &&
+      ["MANAGER", "CASHIER", "KITCHEN", "WAITER"].includes(user.role) &&
+      user.restaurantId
+    ) {
+      try {
+        const { getTenantClientByRestaurantId } = require("../config/tenantPrisma");
+        const tenantHit = await getTenantClientByRestaurantId(user.restaurantId);
+        const tenantUser = await tenantHit.client.user.findUnique({
+          where: { email: lookupEmail },
+        });
+        if (tenantUser) {
+          user = tenantUser;
+          isTenantUser = true;
+          tenantDb = tenantHit.client;
+          resolvedRestaurantId = tenantHit.restaurantId;
+        }
+      } catch (staffResolveErr) {
+        // Tenant unavailable → keep the public row (existing behavior).
+        console.warn(
+          "[Login] Could not resolve tenant staff identity for",
+          lookupEmail,
+          staffResolveErr.message
+        );
+      }
+    }
+
     if (user) {
       // Found in public — ADMIN or SUPER_ADMIN
       resolvedRestaurantId = user.restaurantId || null;

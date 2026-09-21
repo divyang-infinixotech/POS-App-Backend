@@ -31,6 +31,12 @@ const BUSINESS_TYPES = [
   { value: "SUPERMARKET", label: "Supermarket / Grocery", group: "Retail" },
   { value: "GROCERY", label: "Grocery Store", group: "Retail" },
   { value: "CLOTHING", label: "Retail / Clothing", group: "Retail" },
+  { value: "ELECTRONICS", label: "Electronics Store", group: "Retail" },
+  { value: "FURNITURE", label: "Furniture Store", group: "Retail" },
+  { value: "HARDWARE", label: "Hardware Store", group: "Retail" },
+  { value: "COSMETICS", label: "Cosmetics Store", group: "Retail" },
+  { value: "STATIONERY", label: "Stationery Store", group: "Retail" },
+  { value: "JEWELLERY", label: "Jewellery Store", group: "Retail" },
   { value: "OTHER", label: "Other", group: "Retail" },
 ];
 

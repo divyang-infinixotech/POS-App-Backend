@@ -7,6 +7,26 @@ const {
 const bcrypt = require("bcryptjs");
 const { createNotification } = require("../services/notification.service");
 const { normalizeEmail, emailRequiredError, isValidEmail } = require("../utils/email");
+const { getVisibleStaffRoles } = require("../utils/businessCapabilities");
+const prisma = require("../config/prisma");
+
+/**
+ * §6: resolve the capability-derived role set THIS tenant may assign to staff
+ * (Staff Roster Add/Edit). BusinessType comes from the platform Restaurant row
+ * — never the client. Falls back to the full tenant-staff set only if the
+ * platform lookup fails, so an infra hiccup can never lock staff management.
+ */
+async function resolveVisibleStaffRoles(restaurantId) {
+  try {
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { businessType: true },
+    });
+    return getVisibleStaffRoles(restaurant ? restaurant.businessType : null);
+  } catch {
+    return [...TENANT_STAFF_ROLES];
+  }
+}
 
 function isTenantStaff(req) {
   return req.user.role !== "SUPER_ADMIN" && req.user.role !== "ADMIN" && req.user.restaurantId;
@@ -71,6 +91,16 @@ const createUser = async (req, res) => {
         return res.status(400).json({
           success: false,
           message: "Only MANAGER, CASHIER, KITCHEN or WAITER staff can be created for a restaurant.",
+        });
+      }
+      // §6: role must ALSO be supported by THIS tenant's business capabilities
+      // (e.g. KITCHEN is never creatable in a supermarket). Resolved from the
+      // platform Restaurant row — the client is never trusted.
+      const allowedRoles = await resolveVisibleStaffRoles(restaurantId);
+      if (!allowedRoles.includes(role)) {
+        return res.status(400).json({
+          success: false,
+          message: `Role ${role} is not available for this business type.`,
         });
       }
     }
@@ -158,7 +188,7 @@ const updateUser = async (req, res) => {
   try {
     const { name, email, phone, role, avatar } = req.body;
     const db = await resolveUserDb(req);
-    const existingUser = await db.user.findFirst({ where: { id: Number(req.params.id) }, select: { id: true } });
+    const existingUser = await db.user.findFirst({ where: { id: Number(req.params.id) }, select: { id: true, role: true } });
     if (!existingUser) return res.status(404).json({ success: false, message: "User not found" });
 
     const restaurantId = resolveTenantTargetRestaurantId(req, db);
@@ -171,6 +201,20 @@ const updateUser = async (req, res) => {
         success: false,
         message: "Only MANAGER, CASHIER, KITCHEN or WAITER roles can be assigned to restaurant staff.",
       });
+    }
+    // §6: a NEW role must be supported by THIS tenant's business capabilities.
+    // §4: legacy users keep their existing role — submitting the SAME
+    // unsupported role back (an edit that does not change the role, which the
+    // roster form always sends) is allowed, so legacy accounts stay editable
+    // without ever re-introducing the role for other/new users.
+    if (targetingTenant && role && role !== existingUser.role) {
+      const allowedRoles = await resolveVisibleStaffRoles(restaurantId);
+      if (!allowedRoles.includes(role)) {
+        return res.status(400).json({
+          success: false,
+          message: `Role ${role} is not available for this business type.`,
+        });
+      }
     }
 
     const data = { name, phone, role, avatar };

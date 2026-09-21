@@ -132,6 +132,24 @@ enum PaymentGateway {
   NONE
 }
 
+/// Promotion discount types (Discounts & Promotions module).
+/// PERCENTAGE / FIXED_AMOUNT are self-standing promotions; STAFF is an
+/// authenticated-staff discount; PROMO_CODE is redeemed by code. Extendable.
+enum PromotionType {
+  PERCENTAGE
+  FIXED_AMOUNT
+  STAFF
+  PROMO_CODE
+}
+
+/// Admin-set lifecycle switch. NEVER user-settable to EXPIRED — the effective
+/// status is derived from schedule (startDate/endDate/time) + this switch.
+enum DiscountStatus {
+  ACTIVE
+  SCHEDULED
+  DISABLED
+}
+
 enum AuditModule {
   AUTH
   USER
@@ -150,6 +168,7 @@ enum AuditModule {
   FLOOR
   REPORT
   NOTIFICATION
+  DISCOUNT
 }
 
 enum AuditAction {
@@ -165,6 +184,7 @@ enum AuditAction {
   VIEW
   REFUND
   APPLY_DISCOUNT
+  DISCOUNT
 }
 
 enum CustomerType {
@@ -278,14 +298,26 @@ enum BusinessType {
   SUPERMARKET
   GROCERY
   CLOTHING
+  /// Retail verticals, phase 2 (additive — legacy records unaffected)
+  ELECTRONICS
+  FURNITURE
+  HARDWARE
+  COSMETICS
+  STATIONERY
+  JEWELLERY
 }
 
 /// High-level POS experience determined by the subscription plan.
-/// BASIC_POS: quick billing, no tables/KOT/kitchen workflow
+/// BASIC_POS: quick billing for food businesses (café/bar/bakery/food-truck/cloud-kitchen),
+///            no tables/KOT/kitchen workflow
 /// RESTAURANT: full dine-in with tables, KOT, kitchen, active orders
+/// QUICK_BILLING: quick billing for RETAIL businesses (supermarket/clothing/
+///            electronics/furniture/etc.) — products/barcode/inventory focus,
+///            no restaurant ordering workflow at all
 enum BusinessMode {
   BASIC_POS
   RESTAURANT
+  QUICK_BILLING
 }
 
 // ─── Models ─────────────────────────────────────────────────────────────────────
@@ -739,6 +771,7 @@ model Order {
   stockMovements StockMovement[]
   mergeGroupsAsPrimary MergeGroup[]
   mergeGroupsAsOriginal MergeGroupTable[]
+  orderDiscounts OrderDiscount[]
 
   @@unique([restaurantId, orderNo])
   @@index([restaurantId])
@@ -1245,6 +1278,131 @@ model MergeGroupTable {
   @@index([mergeGroupId])
   @@index([tableId])
   @@index([originalOrderId])
+}
+
+/// Discounts & Promotions (tenant model). One configured promotion for the
+/// restaurant. Scope (ENTIRE_ORDER / CATEGORIES / PRODUCTS) is resolved via
+/// the DiscountCategory / DiscountProduct junctions.
+model Discount {
+  id                    Int             @id @default(autoincrement())
+  name                  String
+  description           String?
+  type                  PromotionType
+  discountValue         Float
+  maximumDiscountAmount Float?
+  minimumOrderAmount    Float           @default(0)
+  startDate             DateTime
+  endDate               DateTime
+  startTime             String? // "HH:mm" 24h — optional daily window start
+  endTime               String? // "HH:mm" 24h — optional daily window end
+  status                DiscountStatus  @default(ACTIVE)
+  scope                 String          @default("ENTIRE_ORDER") // ENTIRE_ORDER | CATEGORIES | PRODUCTS
+  applicableDays        Int             @default(127) // bitmask: bit0=Sun … bit6=Sat; 127 = every day
+  // PROMO_CODE only: whether the code grants a percentage or a fixed amount.
+  // PERCENTAGE/FIXED_AMOUNT/STAFF types keep their own semantics.
+  promoMethod           String?         // "PERCENTAGE" | "FIXED_AMOUNT" (PROMO_CODE only)
+  customerEligibility   String          @default("EVERYONE") // EVERYONE | REGISTERED
+  stackable             Boolean         @default(false)
+  maxDiscountsPerOrder  Int             @default(1)
+  usageLimit            Int?
+  usageCount            Int             @default(0)
+  perCustomerLimit      Int?
+  staffRoles            String? // JSON array of UserRole strings (STAFF type)
+  // STAFF type: specific tenant Users eligible for this discount. Empty/null =
+  // every active user whose role is in staffRoles (role-based behavior).
+  staffUserIds          Json? // number[] of tenant User ids
+  staffRequireApproval  Boolean         @default(false)
+  staffRoleMaxPercent   Json? // { "CASHIER": 5, "WAITER": 0 } role-specific % caps
+  archivedAt            DateTime?
+  createdBy             Int?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  categories       DiscountCategory[]
+  products         DiscountProduct[]
+  promoCode        PromoCode?
+  orderDiscounts   OrderDiscount[]
+
+  @@index([status])
+  @@index([startDate])
+  @@index([endDate])
+  @@index([type])
+  @@index([archivedAt])
+}
+
+/// Junction: categories included in a CATEGORIES-scoped discount.
+model DiscountCategory {
+  id         Int      @id @default(autoincrement())
+  discountId Int
+  categoryId Int
+  createdAt  DateTime @default(now())
+
+  discount Discount @relation(fields: [discountId], references: [id], onDelete: Cascade)
+
+  @@unique([discountId, categoryId])
+  @@index([categoryId])
+}
+
+/// Junction: menu items included in a PRODUCTS-scoped discount.
+model DiscountProduct {
+  id         Int      @id @default(autoincrement())
+  discountId Int
+  menuItemId Int
+  createdAt  DateTime @default(now())
+
+  discount Discount @relation(fields: [discountId], references: [id], onDelete: Cascade)
+
+  @@unique([discountId, menuItemId])
+  @@index([menuItemId])
+}
+
+/// Promo code for a PROMO_CODE discount (1:1 with its Discount row).
+model PromoCode {
+  id            Int      @id @default(autoincrement())
+  discountId    Int      @unique
+  code          String // normalized (trim + uppercase) — unique per tenant
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  discount Discount @relation(fields: [discountId], references: [id], onDelete: Cascade)
+
+  @@unique([code])
+  @@index([discountId])
+  @@index([isActive])
+}
+
+/// Append-only record of a discount applied to an order (tenant model).
+/// Historical snapshot: editing/archiving/expiring the promotion later NEVER
+/// changes these rows, so old orders keep the discount that was actually
+/// applied at checkout.
+model OrderDiscount {
+  id             Int           @id @default(autoincrement())
+  orderId        Int
+  discountId     Int?
+  promoCodeId    Int?
+  discountType   String // PromotionType at apply time (string for history safety)
+  discountName   String
+  discountValue  Float
+  discountAmount Float
+  discountLabel  String? // e.g. "20% OFF" — display snapshot for receipts/reports
+  reason         String?
+  appliedBy      Int?
+  approvedBy     Int?
+  // STAFF discounts: the tenant User who RECEIVED the discount (normalized
+  // relation; staffName is the historical display snapshot).
+  staffUserId    Int?
+  staffName      String?
+  isManual       Boolean       @default(false)
+  createdAt      DateTime      @default(now())
+
+  order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  discount  Discount?   @relation(fields: [discountId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([discountId])
+  @@index([staffUserId])
+  @@index([createdAt])
 }
 
 /// Online payment attempt for a subscription upgrade/renewal (Razorpay).

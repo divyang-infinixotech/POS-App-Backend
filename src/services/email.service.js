@@ -79,7 +79,7 @@ function supportContacts(cfg) {
  */
 async function deliver(row) {
   const { deliverEmail, activeTransportName } = require("./email/transport");
-  const provider = activeTransportName();
+  const provider = await activeTransportName();
 
   if (provider === "smtp") {
     // Legacy preconditions preserved for SMTP mode.
@@ -310,11 +310,42 @@ function sendApplicationReceivedEmail({ to, applicantName, restaurantName, appli
   });
 }
 
-function sendApplicationApprovedEmail({ to, applicantName, restaurantName, applicationRef, approvedAt, planName, loginUrl }) {
+/**
+ * APPLICATION_APPROVED — the "Your application has been approved" email.
+ *
+ * Login info policy (real data only, never fabricated):
+ *  - `loginEmail` is the provisioned ADMIN's actual email (or omitted).
+ *  - `temporaryPassword` is the REAL temporary credential captured during
+ *    provisioning ONLY. When the applicant created their own password at
+ *    registration (self-serve) no plaintext exists — pass null and the
+ *    template renders the "sign in with your registered password" wording
+ *    instead. NEVER a generated/fake value.
+ *  - `loginUrl` comes from the configured APP_FRONTEND_URL. In production a
+ *    missing APP_FRONTEND_URL yields null → the email is NOT sent (a localhost
+ *    link must never be mailed); the queue's idempotency key keeps the event
+ *    re-triggerable. Localhost URLs are additionally blocked outside dev/test.
+ * The password travels ONLY inside the queued payload and is sanitized from
+ * the EmailLog after a successful send (existing queue behavior).
+ */
+function sendApplicationApprovedEmail({ to, applicantName, restaurantName, applicationRef, approvedAt, planName, loginUrl, loginEmail, temporaryPassword }) {
+  const { isLocalhostUrl, isDevelopment } = require("../utils/frontendUrl");
+  const url = String(loginUrl || "").trim();
+  // Production tripwire: refuse to queue an email whose login URL is localhost.
+  if (url && isLocalhostUrl(url) && !isDevelopment() && process.env.NODE_ENV !== "test") {
+    logger.error(`[Email] APPLICATION_APPROVED refused: login URL is localhost in a non-development environment. Set APP_FRONTEND_URL. applicationRef=${applicationRef || "-"}`);
+    return Promise.resolve(null);
+  }
+  // Explicit handling when credentials are unavailable — never invent one.
+  const tempPassword = typeof temporaryPassword === "string" && temporaryPassword.length > 0 ? temporaryPassword : null;
   return enqueueEmail({
     to,
     template: "APPLICATION_APPROVED",
-    data: { applicantName, restaurantName, applicationRef, approvedAt, planName, loginUrl },
+    data: {
+      applicantName, restaurantName, applicationRef, approvedAt, planName,
+      loginUrl: url || null,
+      loginEmail: loginEmail || null,
+      temporaryPassword: tempPassword,
+    },
     idempotencyKey: `APPLICATION_APPROVED:${applicationRef}`,
     maxAttempts: 5,
   }).catch((e) => {

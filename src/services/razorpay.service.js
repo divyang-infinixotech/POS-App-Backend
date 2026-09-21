@@ -175,7 +175,12 @@ async function activateSubscriptionPayment(params) {
       select: { businessType: true },
     });
     if (activationRestaurant) {
-      assertPlanCompatibleWithBusinessType(activationRestaurant.businessType, plan);
+      // The tenant's CURRENT plan is exempt: a legacy tenant (businessType
+      // OTHER/SUPERMARKET with a BASIC_POS plan from before QUICK_BILLING)
+      // can renew that plan. Switching plans is still fully gated.
+      assertPlanCompatibleWithBusinessType(activationRestaurant.businessType, plan, null, {
+        isCurrentPlan: subscription.planId === plan.id,
+      });
     }
 
     // Mark the payment paid FIRST (source of truth for the purchase). The
